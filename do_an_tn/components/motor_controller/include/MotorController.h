@@ -9,7 +9,6 @@ public:
     esp_err_t initialize();
     esp_err_t readThrottlePercent(uint32_t *percent);
     esp_err_t setMotorDutyPercent(uint32_t percent);
-    esp_err_t setHeadlightDutyPercent(uint32_t percent);
     esp_err_t setMotorPowerEnabled(bool enabled);
 
 private:

@@ -1,6 +1,6 @@
 #include "MotorController.h"
 
-#include "MotorControllerConfig.h"
+#include "BoardConfig.h"
 #include "driver/adc.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -50,20 +50,7 @@ esp_err_t MotorController::initialize()
     motorChannel.timer_sel = LEDC_TIMER_0;
     motorChannel.duty = 0;
     motorChannel.hpoint = 0;
-    err = ledc_channel_config(&motorChannel);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    ledc_channel_config_t headlightChannel = {};
-    headlightChannel.gpio_num = DEMO_HEADLIGHT_PWM_GPIO;
-    headlightChannel.speed_mode = LEDC_LOW_SPEED_MODE;
-    headlightChannel.channel = LEDC_CHANNEL_1;
-    headlightChannel.intr_type = LEDC_INTR_DISABLE;
-    headlightChannel.timer_sel = LEDC_TIMER_0;
-    headlightChannel.duty = 0;
-    headlightChannel.hpoint = 0;
-    return ledc_channel_config(&headlightChannel);
+    return ledc_channel_config(&motorChannel);
 }
 
 esp_err_t MotorController::readThrottlePercent(uint32_t *percent)
@@ -98,11 +85,6 @@ esp_err_t MotorController::setPwmDuty(uint32_t channel, uint32_t percent)
 esp_err_t MotorController::setMotorDutyPercent(uint32_t percent)
 {
     return setPwmDuty(LEDC_CHANNEL_0, percent);
-}
-
-esp_err_t MotorController::setHeadlightDutyPercent(uint32_t percent)
-{
-    return setPwmDuty(LEDC_CHANNEL_1, percent);
 }
 
 esp_err_t MotorController::setMotorPowerEnabled(bool enabled)
