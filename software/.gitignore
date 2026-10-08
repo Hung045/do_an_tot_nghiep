@@ -42,3 +42,7 @@ env/
 
 # Local language-server caches
 .ccls-cache/
+
+# Machine-specific VS Code settings
+.vscode/settings.json
+.vscode/c_cpp_properties.json
