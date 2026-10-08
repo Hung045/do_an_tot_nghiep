@@ -1,5 +1,6 @@
 {
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32"
-    }
+    },
+    "cmake.sourceDirectory": "E:/tai_lieu_hoc_ptit/do_an_tot_nghiep/do_an_tot_nghiep/do_an_tn"
 }

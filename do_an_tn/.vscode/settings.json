@@ -25,5 +25,7 @@
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**"
-  ]
+  ],
+  "idf.flashType": "JTAG",
+  "idf.currentSetup": "D:\\esp_idf\\install\\.espressif\\v5.3.3\\esp-idf"
 }

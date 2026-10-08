@@ -18,9 +18,9 @@ do_an_tn/
     ├── crash_detector/          MPU6050 tilt measurement and crash threshold
     ├── motor_controller/        Throttle ADC, motor PWM, and relay
     ├── headlight_controller/    Headlight PWM output
-    ├── power_monitor/           INA226 interface scaffold
-    ├── gps_tracker/             NEO-6M UART interface scaffold
-    ├── data_logger/             EEPROM telemetry interface scaffold
+    ├── power_monitor/           INA226 register driver and configurable shunt calibration
+    ├── gps_tracker/             NEO-6M UART/NMEA RMC+GGA reader
+    ├── data_logger/             AT24C256 CRC-protected circular telemetry log
     ├── telemetry_link/          MQTT/event publishing interface scaffold
     └── project_types/            Shared telemetry and event data types
 ```
@@ -28,9 +28,9 @@ do_an_tn/
 Each hardware/feature component owns its `CMakeLists.txt`, public headers in
 `include/`, and implementation source. `board_config` and `project_types` are
 header-only shared components. `main.cpp` coordinates the demo rather than
-containing sensor drivers. The current prototype uses one FreeRTOS control
-task; separate sensor/network tasks and I2C synchronization should be added as
-those modules are implemented.
+containing sensor drivers. The prototype uses one FreeRTOS control task. I2C
+devices are accessed sequentially from that task; add a shared mutex or a
+single bus-owner task before moving access into concurrent tasks.
 
 ## Implemented prototype
 
@@ -42,11 +42,10 @@ those modules are implemented.
 - Latch the motor off after a sustained tilt threshold or sensor read failure.
 - Print basic status to the serial console.
 
-`PowerMonitor`, `GpsTracker`, `DataLogger`, and `TelemetryLink` currently expose
-interfaces only; their methods return `ESP_ERR_NOT_SUPPORTED` until INA226,
-NEO-6M, EEPROM, and network drivers are implemented. Circular logging,
-dashboard, and email alerts are not implemented yet. Shared pin defaults are
-in `components/board_config/include/BoardConfig.h`.
+`PowerMonitor`, `GpsTracker`, and `DataLogger` now contain initial drivers.
+`TelemetryLink` remains an interface-only scaffold; Wi-Fi/MQTT, dashboard,
+and email alerts are not implemented. Shared pin defaults and device settings
+are in `components/board_config/include/BoardConfig.h`.
 
 ## Component hand-off
 
@@ -55,9 +54,9 @@ in `components/board_config/include/BoardConfig.h`.
 | `crash_detector` | `CrashDetector.cpp` | Calibrate MPU6050 axes, filter tilt, validate fall threshold |
 | `motor_controller` | `MotorController.cpp` | Calibrate ADC range, verify PWM/relay polarity and limits |
 | `headlight_controller` | `HeadlightController.cpp` | Tune soft-start and adaptive brightness curve |
-| `power_monitor` | `PowerMonitor.cpp` | Configure INA226 I2C address, shunt and battery scaling |
-| `gps_tracker` | `GpsTracker.cpp` | Configure UART, parse NMEA and reject invalid/stale fixes |
-| `data_logger` | `DataLogger.cpp` | Implement AT24C256 page writes, ring index and recovery metadata |
+| `power_monitor` | `PowerMonitor.cpp` | Confirm module address/shunt calibration; calibrate battery state-of-charge model |
+| `gps_tracker` | `GpsTracker.cpp` | Test UART2 wiring and NMEA fixes outdoors; validate stale-fix handling |
+| `data_logger` | `DataLogger.cpp` | Test page writes, power-loss recovery, and circular-log reads on the actual EEPROM |
 | `telemetry_link` | `TelemetryLink.cpp` | Add Wi-Fi/MQTT lifecycle, payload format and reconnect policy |
 
 Keep motor cut-off local and independent of Wi-Fi. Coordinate I2C ownership
@@ -71,7 +70,7 @@ actual board and modules before wiring.
 
 | Function | ESP32 pin |
 | --- | --- |
-| Throttle potentiometer wiper | GPIO34 / ADC1_CHANNEL_6 |
+| Throttle potentiometer wiper | GPIO34 / ADC1_CHANNEL_6 (oneshot `ADC_CHANNEL_6`) |
 | Motor driver PWM input | GPIO25 |
 | Headlight MOSFET PWM input | GPIO26 |
 | Relay control input | GPIO27 |
@@ -80,10 +79,38 @@ actual board and modules before wiring.
 | NEO-6M TX → ESP32 RX | GPIO16 / UART2 |
 | NEO-6M RX ← ESP32 TX | GPIO17 / UART2 |
 
+The purchased MPU6050, INA226, and AT24C256 share the I2C bus on GPIO21/22.
+Default I2C addresses in `BoardConfig.h` assume MPU6050 AD0 low (0x68), INA226
+A0/A1 strapped for 0x40, and AT24C256 A0-A2 grounded (0x50); verify the actual
+module straps before wiring. AT24C256 uses 32 KiB capacity, 64-byte pages, and
+a 16-bit memory address. Do not run its I2C pull-ups at 5 V on the ESP32 bus.
+
+The INA226 module's current calibration depends on the value printed on its
+onboard shunt resistor. Confirm that marking before using current and power
+readings; a generic "20 A" module label is not enough to select a safe,
+accurate calibration. The initial code assumes an R002 (2 mOhm) shunt with a
+20 A range; update `DEMO_INA226_SHUNT_MICRO_OHMS` and
+`DEMO_INA226_MAX_CURRENT_MILLIAMPS` in `BoardConfig.h` to match the exact module
+before connecting the load. The driver rejects configurations whose maximum
+current would exceed the INA226 shunt-voltage range. State of charge currently
+reports unknown (`-1`); it needs a calibrated 3S battery model and is not
+inferred by linear voltage scaling.
+
+The logger stores 64-byte CRC-protected records in a circular region and scans
+the EEPROM at startup to recover the newest complete record after power loss.
+At a 1 Hz sampling rate, 32 KiB stores about 8.5 minutes of history. Verify the
+EEPROM address pins, page size, and I2C voltage before first use.
+
 Power the potentiometer from 3.3 V and GND; never connect its wiper to 5 V.
-Drive the motor and lamp through appropriately rated modules, not directly
-from ESP32 pins. Check relay active polarity and update
-`DEMO_RELAY_ACTIVE_LEVEL` if necessary.
+The throttle is on GPIO34 / ADC1_CH6. Drive the JGB37-310 motor through the
+LR7843 MOSFET module and the relay's appropriately rated contacts; drive the
+12 V headlight LED through a suitable current-limited driver and MOSFET module.
+Never connect motor or lamp current directly to ESP32 pins. Check relay active
+polarity and update `DEMO_RELAY_ACTIVE_LEVEL` if necessary.
+
+Use the 3S pack's BMS and a charger intended for 3S Li-ion packs (12.6 V
+termination). Fuse the battery output near the pack. The LM2596 is for the
+low-voltage electronics supply, not for powering the motor or headlight.
 
 ## Build in VS Code
 
