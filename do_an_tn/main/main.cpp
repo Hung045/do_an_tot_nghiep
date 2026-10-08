@@ -2,8 +2,12 @@
 #include <cstdint>
 
 #include "CrashDetector.h"
+#include "DataLogger.h"
+#include "GpsTracker.h"
 #include "HeadlightController.h"
 #include "MotorController.h"
+#include "PowerMonitor.h"
+#include "ProjectTypes.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,11 +17,15 @@ namespace {
 constexpr char TAG[] = "vehicle_demo";
 constexpr uint32_t kLoopPeriodMs = 50;
 constexpr uint32_t kThrottleReleaseMs = 1000;
+constexpr uint32_t kTelemetryPeriodMs = 1000;
 constexpr float kMaximumDimmingTiltDegrees = 60.0F;
 
 CrashDetector crashDetector;
+DataLogger dataLogger;
+GpsTracker gpsTracker;
 MotorController motorController;
 HeadlightController headlightController;
+PowerMonitor powerMonitor;
 
 void latchSafetyFault(bool *faultLatched, const char *reason)
 {
@@ -68,6 +76,22 @@ void controlTask(void *)
         }
     }
 
+    err = powerMonitor.initialize();
+    const bool powerMonitorReady = err == ESP_OK;
+    if (!powerMonitorReady) {
+        ESP_LOGW(TAG, "INA226 unavailable: %s", esp_err_to_name(err));
+    }
+    err = gpsTracker.initialize();
+    const bool gpsTrackerReady = err == ESP_OK;
+    if (!gpsTrackerReady) {
+        ESP_LOGW(TAG, "NEO-6M unavailable: %s", esp_err_to_name(err));
+    }
+    err = dataLogger.initialize();
+    const bool dataLoggerReady = err == ESP_OK;
+    if (!dataLoggerReady) {
+        ESP_LOGW(TAG, "AT24C256 unavailable: %s", esp_err_to_name(err));
+    }
+
     ESP_LOGI(TAG, "Demo ready. Keep throttle at zero for 1 second to arm.");
 
     bool faultLatched = false;
@@ -76,6 +100,9 @@ void controlTask(void *)
     uint32_t lightDuty = 0;
     TickType_t throttleReleasedAt = 0;
     TickType_t lastStatusAt = xTaskGetTickCount();
+    TickType_t lastTelemetryAt = lastStatusAt;
+    PowerReading powerReading = {};
+    GpsFix gpsFix = {};
 
     for (;;) {
         const TickType_t now = xTaskGetTickCount();
@@ -148,6 +175,47 @@ void controlTask(void *)
                      (armed && !faultLatched) ? "enabled" : "off",
                      faultLatched ? "LOCKED" : (armed ? "ARMED" : "WAIT_THROTTLE_ZERO"));
             lastStatusAt = now;
+        }
+
+        if ((now - lastTelemetryAt) >= pdMS_TO_TICKS(kTelemetryPeriodMs)) {
+            if (powerMonitorReady) {
+                err = powerMonitor.read(&powerReading);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "INA226 read failed: %s", esp_err_to_name(err));
+                    powerReading = {};
+                }
+            }
+
+            if (gpsTrackerReady) {
+                err = gpsTracker.readFix(&gpsFix);
+                if (err == ESP_ERR_NOT_FOUND) {
+                    gpsFix = {};
+                } else if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "GPS read failed: %s", esp_err_to_name(err));
+                    gpsFix = {};
+                }
+            }
+
+            TelemetryRecord record = {};
+            record.uptimeMilliseconds =
+                static_cast<uint32_t>(now * portTICK_PERIOD_MS);
+            record.tiltDegrees = tiltDegrees;
+            record.throttlePercent = filteredThrottle;
+            record.busVoltageVolts = powerReading.busVoltageVolts;
+            record.currentMilliamps = powerReading.currentMilliamps;
+            record.gps = gpsFix;
+            if (dataLoggerReady) {
+                err = dataLogger.append(record);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "EEPROM log write failed: %s", esp_err_to_name(err));
+                } else {
+                    ESP_LOGI(TAG, "logged: %.2f V, %.0f mA, GPS=%s",
+                             static_cast<double>(record.busVoltageVolts),
+                             static_cast<double>(record.currentMilliamps),
+                             record.gps.valid ? "valid" : "no-fix");
+                }
+            }
+            lastTelemetryAt = now;
         }
 
         vTaskDelay(pdMS_TO_TICKS(kLoopPeriodMs));

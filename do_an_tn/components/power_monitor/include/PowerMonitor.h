@@ -13,4 +13,7 @@ class PowerMonitor {
 public:
     esp_err_t initialize();
     esp_err_t read(PowerReading *reading);
+
+private:
+    float currentLsbAmps_ = 0.0F;
 };

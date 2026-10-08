@@ -39,7 +39,7 @@ esp_err_t CrashDetector::initialize()
     config.scl_io_num = DEMO_I2C_SCL_GPIO;
     config.sda_pullup_en = GPIO_PULLUP_ENABLE;
     config.scl_pullup_en = GPIO_PULLUP_ENABLE;
-    config.master.clk_speed = 100000;
+    config.master.clk_speed = DEMO_I2C_FREQUENCY_HZ;
 
     esp_err_t err = i2c_param_config(kI2cPort, &config);
     if (err != ESP_OK) {

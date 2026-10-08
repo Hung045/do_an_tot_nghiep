@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "esp_adc/adc_oneshot.h"
 #include "esp_err.h"
 
 class MotorController {
@@ -13,4 +14,6 @@ public:
 
 private:
     esp_err_t setPwmDuty(uint32_t channel, uint32_t percent);
+
+    adc_oneshot_unit_handle_t adcHandle_ = nullptr;
 };

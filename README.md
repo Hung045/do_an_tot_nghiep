@@ -20,19 +20,23 @@ relay đã có. Cấu trúc firmware nằm trong `do_an_tn/components/`:
 - `crash_detector`: đo góc MPU6050 và phát hiện nghiêng kéo dài.
 - `motor_controller`: đọc tay ga, xuất PWM motor và điều khiển relay.
 - `headlight_controller`: xuất PWM đèn.
-- `power_monitor`, `gps_tracker`, `data_logger`, `telemetry_link`: có API khung;
-  phần cứng INA226/GPS/EEPROM/MQTT chưa được triển khai.
+- `power_monitor`, `gps_tracker`, `data_logger`: có driver khởi đầu cho
+  INA226, NEO-6M và AT24C256, được lấy mẫu/ghi vòng 1 Hz.
+- `telemetry_link`: vẫn là API khung; Wi-Fi/MQTT/dashboard chưa triển khai.
 - `project_types`: kiểu dữ liệu telemetry và sự kiện dùng chung.
 
-GPS, circular logging và IoT chưa được triển khai. Cần xác nhận build trong
-môi trường ESP-IDF của từng cộng sự trước khi thử phần cứng.
+Build đã được kiểm tra với ESP-IDF 5.3.3. Các driver cần được thử trên module
+thực; INA226 mặc định giả định shunt R002/20 A và giá trị này phải khớp phần
+cứng đã mua. Cần kiểm tra lại sơ đồ chân, điện áp logic và cực tính relay trước
+khi cấp nguồn tải.
 
 ## Phân chia phát triển gợi ý
 
 - **Điều khiển phần cứng:** `do_an_tn/components/motor_controller`
-- **Nguồn/năng lượng:** hoàn thiện `power_monitor` với INA226 và tính toán pin
-- **Định vị:** hoàn thiện `gps_tracker` với UART/NEO-6M
-- **Hộp đen:** hoàn thiện `data_logger` với EEPROM, định dạng bản ghi và vòng ghi
+- **Nguồn/năng lượng:** xác nhận shunt INA226 và hiệu chuẩn đo; xây dựng mô hình
+  ước lượng pin 3S đã hiệu chuẩn
+- **Định vị:** kiểm thử UART/NMEA ngoài trời, xác nhận tọa độ và dữ liệu stale
+- **Hộp đen:** kiểm thử EEPROM sau mất nguồn và kiểm tra vòng ghi trên module thật
 - **Kết nối:** hoàn thiện `telemetry_link` với MQTT/dashboard; lỗi mạng không
   được vô hiệu hóa an toàn cục bộ
 

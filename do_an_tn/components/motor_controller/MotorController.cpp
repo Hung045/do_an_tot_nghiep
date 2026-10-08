@@ -1,7 +1,7 @@
 #include "MotorController.h"
 
 #include "BoardConfig.h"
-#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 
@@ -22,11 +22,18 @@ esp_err_t MotorController::initialize()
         return err;
     }
 
-    err = adc1_config_width(ADC_WIDTH_BIT_12);
+    adc_oneshot_unit_init_cfg_t adcUnitConfig = {};
+    adcUnitConfig.unit_id = ADC_UNIT_1;
+    adcUnitConfig.ulp_mode = ADC_ULP_MODE_DISABLE;
+    err = adc_oneshot_new_unit(&adcUnitConfig, &adcHandle_);
     if (err != ESP_OK) {
         return err;
     }
-    err = adc1_config_channel_atten(DEMO_THROTTLE_ADC_CHANNEL, ADC_ATTEN_DB_11);
+
+    adc_oneshot_chan_cfg_t throttleConfig = {};
+    throttleConfig.atten = ADC_ATTEN_DB_12;
+    throttleConfig.bitwidth = ADC_BITWIDTH_DEFAULT;
+    err = adc_oneshot_config_channel(adcHandle_, DEMO_THROTTLE_ADC_CHANNEL, &throttleConfig);
     if (err != ESP_OK) {
         return err;
     }
@@ -59,9 +66,14 @@ esp_err_t MotorController::readThrottlePercent(uint32_t *percent)
         return ESP_ERR_INVALID_ARG;
     }
 
-    const int raw = adc1_get_raw(DEMO_THROTTLE_ADC_CHANNEL);
-    if (raw < 0) {
-        return ESP_FAIL;
+    if (adcHandle_ == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int raw = 0;
+    const esp_err_t err = adc_oneshot_read(adcHandle_, DEMO_THROTTLE_ADC_CHANNEL, &raw);
+    if (err != ESP_OK) {
+        return err;
     }
 
     *percent = (static_cast<uint32_t>(raw) * 100U) / 4095U;
