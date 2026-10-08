@@ -6,6 +6,9 @@
 //em nhu la dai duong xanh ngat khien bao nguoi ao uoc 
 //con anh la la thu roi nhe roi
 
+//em yeu c/c++
+//em yeu vscode em yeu esp-idf
+
 #include <cmath>
 #include <cstdint>
 
