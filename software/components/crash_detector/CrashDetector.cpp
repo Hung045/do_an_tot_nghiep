@@ -9,6 +9,8 @@
 //em yeu c/c++
 //em yeu vscode em yeu esp-idf
 
+// nỡ nên trái tim đổi màu
+
 #include <cmath>
 #include <cstdint>
 
