@@ -3,6 +3,8 @@
 //sợ ngày mai em đi mất chẳng còn thân xác xơ anh mot mau trong em
 // so ngay mai anh ngu quen thuc giac tay om nham goi
 // mot mau mua thay cho nang
+//em nhu la dai duong xanh ngat khien bao nguoi ao uoc 
+//con anh la la thu roi nhe roi
 
 #include <cmath>
 #include <cstdint>
