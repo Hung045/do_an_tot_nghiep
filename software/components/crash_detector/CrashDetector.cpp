@@ -1,6 +1,8 @@
 #include "CrashDetector.h"
 
 //sợ ngày mai em đi mất chẳng còn thân xác xơ anh mot mau trong em
+// so ngay mai anh ngu quen thuc giac tay om nham goi
+// mot mau mua thay cho nang
 
 #include <cmath>
 #include <cstdint>
