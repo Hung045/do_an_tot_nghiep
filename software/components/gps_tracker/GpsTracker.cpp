@@ -13,6 +13,8 @@ namespace {
 constexpr size_t kUartBufferSize = 1024;
 constexpr TickType_t kFixMaximumAge = pdMS_TO_TICKS(5000);
 constexpr float kKnotsToMetersPerSecond = 0.514444F;
+// Bộ lọc ngưỡng chết (Deadband): Triệt tiêu nhiễu vận tốc ảo (< 0.3 m/s ~ 1 km/h) khi xe đứng yên
+constexpr float kMinValidSpeedMps = 0.30F;
 
 bool parseCoordinate(const char *value, const char *hemisphere, double *degrees)
 {
@@ -27,16 +29,23 @@ bool parseCoordinate(const char *value, const char *hemisphere, double *degrees)
         return false;
     }
 
-    const double wholeDegrees = static_cast<int>(degreesAndMinutes / 100.0);
-    const double minutes = degreesAndMinutes - (wholeDegrees * 100.0);
+    const int wholeDegrees = static_cast<int>(degreesAndMinutes / 100.0);
+    const double minutes = degreesAndMinutes - (static_cast<double>(wholeDegrees) * 100.0);
     if (minutes < 0.0 || minutes >= 60.0) {
         return false;
     }
 
-    double coordinate = wholeDegrees + (minutes / 60.0);
+    double coordinate = static_cast<double>(wholeDegrees) + (minutes / 60.0);
     if (hemisphere[0] == 'S' || hemisphere[0] == 'W') {
         coordinate = -coordinate;
     } else if (hemisphere[0] != 'N' && hemisphere[0] != 'E') {
+        return false;
+    }
+
+    if ( (hemisphere[0] == 'N' || hemisphere[0] == 'S') && (coordinate < -90.0 || coordinate > 90.0) ) {
+        return false;
+    }
+    if ( (hemisphere[0] == 'E' || hemisphere[0] == 'W') && (coordinate < -180.0 || coordinate > 180.0) ) {
         return false;
     }
 
@@ -74,6 +83,8 @@ bool verifyChecksum(char *sentence)
 
 esp_err_t GpsTracker::initialize()
 {
+    const auto uartPort = static_cast<uart_port_t>(DEMO_GPS_UART_PORT);
+
     uart_config_t config = {};
     config.baud_rate = DEMO_GPS_BAUD_RATE;
     config.data_bits = UART_DATA_8_BITS;
@@ -82,14 +93,12 @@ esp_err_t GpsTracker::initialize()
     config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
     config.source_clk = UART_SCLK_DEFAULT;
 
-    esp_err_t err = uart_param_config(
-        static_cast<uart_port_t>(DEMO_GPS_UART_PORT),
-        &config);
+    esp_err_t err = uart_param_config(uartPort, &config);
     if (err != ESP_OK) {
         return err;
     }
     err = uart_set_pin(
-        static_cast<uart_port_t>(DEMO_GPS_UART_PORT),
+        uartPort,
         DEMO_GPS_UART_TX_GPIO,
         DEMO_GPS_UART_RX_GPIO,
         UART_PIN_NO_CHANGE,
@@ -97,19 +106,26 @@ esp_err_t GpsTracker::initialize()
     if (err != ESP_OK) {
         return err;
     }
-    err = uart_driver_install(
-        static_cast<uart_port_t>(DEMO_GPS_UART_PORT),
-        kUartBufferSize,
-        0,
-        0,
-        nullptr,
-        0);
-    if (err != ESP_OK) {
-        return err;
+    
+    // Nếu driver đã được cài đặt trước đó thì xóa buffer cũ thay vì báo lỗi
+    if (!uart_is_driver_installed(uartPort)) {
+        err = uart_driver_install(
+            uartPort,
+            kUartBufferSize * 2U, // Tăng gấp đôi Ring Buffer RX để không bị tràn khi quét EEPROM
+            0,
+            0,
+            nullptr,
+            0);
+        if (err != ESP_OK) {
+            return err;
+        }
+    } else {
+        uart_flush_input(uartPort);
     }
 
     lineLength_ = 0;
     hasFix_ = false;
+    latestFix_ = {};
     return ESP_OK;
 }
 
@@ -119,13 +135,14 @@ esp_err_t GpsTracker::readFix(GpsFix *fix)
         return ESP_ERR_INVALID_ARG;
     }
 
+    const auto uartPort = static_cast<uart_port_t>(DEMO_GPS_UART_PORT);
     uint8_t bytes[128];
     size_t totalRead = 0;
-    while (totalRead < kUartBufferSize) {
+    constexpr size_t kMaxDrainBytes = kUartBufferSize * 2U;
+
+    while (totalRead < kMaxDrainBytes) {
         size_t bufferedBytes = 0;
-        esp_err_t err = uart_get_buffered_data_len(
-            static_cast<uart_port_t>(DEMO_GPS_UART_PORT),
-            &bufferedBytes);
+        esp_err_t err = uart_get_buffered_data_len(uartPort, &bufferedBytes);
         if (err != ESP_OK) {
             return err;
         }
@@ -133,13 +150,8 @@ esp_err_t GpsTracker::readFix(GpsFix *fix)
             break;
         }
 
-        const size_t bytesToRead =
-            std::min(bufferedBytes, sizeof(bytes));
-        const int bytesRead = uart_read_bytes(
-            static_cast<uart_port_t>(DEMO_GPS_UART_PORT),
-            bytes,
-            bytesToRead,
-            0);
+        const size_t bytesToRead = std::min(bufferedBytes, sizeof(bytes));
+        const int bytesRead = uart_read_bytes(uartPort, bytes, bytesToRead, 0);
         if (bytesRead < 0) {
             return ESP_FAIL;
         }
@@ -154,7 +166,11 @@ esp_err_t GpsTracker::readFix(GpsFix *fix)
 
     const TickType_t now = xTaskGetTickCount();
     if (!hasFix_ || (now - lastFixAt_) > kFixMaximumAge) {
+        hasFix_ = false;
+        latestFix_.valid = false;
         *fix = {};
+        // Giữ lại thông tin số vệ tinh đang nhìn thấy ngay cả khi chưa chốt được Fix
+        fix->satellitesInView = latestFix_.satellitesInView;
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -175,7 +191,7 @@ void GpsTracker::consumeByte(uint8_t byte)
     }
 
     if (byte == '\n' || byte == '\r') {
-        if (lineLength_ > 1) {
+        if (lineLength_ > 6) { // Một bản tin NMEA tối thiểu phải dài hơn 6 ký tự ($GPGGA*xx)
             line_[lineLength_] = '\0';
             parseLine();
         }
@@ -186,7 +202,7 @@ void GpsTracker::consumeByte(uint8_t byte)
     if (lineLength_ + 1 < sizeof(line_)) {
         line_[lineLength_++] = static_cast<char>(byte);
     } else {
-        lineLength_ = 0;
+        lineLength_ = 0; // Tràn dòng do nhiễu -> hủy bỏ câu hiện tại
     }
 }
 
@@ -196,53 +212,72 @@ void GpsTracker::parseLine()
         return;
     }
 
-    char *fields[16] = {};
+    // Tăng lên 24 trường để chứa dư dả mọi câu lệnh NMEA 0183 (GPGGA có 15 trường, GPGSV có 20 trường)
+    char *fields[24] = {};
     size_t fieldCount = 1;
     fields[0] = line_ + 1;
     for (char *cursor = fields[0]; *cursor != '\0'; ++cursor) {
         if (*cursor == ',') {
             *cursor = '\0';
-            if (fieldCount == (sizeof(fields) / sizeof(fields[0]))) {
-                return;
+            if (fieldCount < (sizeof(fields) / sizeof(fields[0]))) {
+                fields[fieldCount++] = cursor + 1;
             }
-            fields[fieldCount++] = cursor + 1;
         }
     }
 
+    // 1. Giải mã bản tin GGA (GPGGA hoặc GNGGA): Lấy số lượng vệ tinh & dự phòng tọa độ
     if (std::strcmp(fields[0], "GPGGA") == 0 ||
         std::strcmp(fields[0], "GNGGA") == 0) {
         if (fieldCount > 7) {
             latestFix_.satellitesInView =
                 static_cast<uint32_t>(std::strtoul(fields[7], nullptr, 10));
+            
+            // Trường số 6 là Fix Quality (0 = Invalid, 1 = GPS fix, 2 = DGPS fix)
+            const uint32_t fixQuality = static_cast<uint32_t>(std::strtoul(fields[6], nullptr, 10));
+            if (fixQuality > 0U) {
+                double latitude = 0.0;
+                double longitude = 0.0;
+                if (parseCoordinate(fields[2], fields[3], &latitude) &&
+                    parseCoordinate(fields[4], fields[5], &longitude)) {
+                    latestFix_.latitudeDegrees = latitude;
+                    latestFix_.longitudeDegrees = longitude;
+                    latestFix_.valid = true;
+                    lastFixAt_ = xTaskGetTickCount();
+                    hasFix_ = true;
+                }
+            }
         }
         return;
     }
 
-    if ((std::strcmp(fields[0], "GPRMC") != 0 &&
-         std::strcmp(fields[0], "GNRMC") != 0) ||
-        fieldCount < 9) {
-        return;
-    }
+    // 2. Giải mã bản tin RMC (GPRMC hoặc GNRMC): Lấy trạng thái, tọa độ và vận tốc di chuyển
+    if ((std::strcmp(fields[0], "GPRMC") == 0 ||
+         std::strcmp(fields[0], "GNRMC") == 0) &&
+        fieldCount >= 9) {
+        
+        // Trường số 2: 'A' = Active (Hợp lệ), 'V' = Void (Chưa bắt được sóng)
+        if (fields[2][0] != 'A') {
+            hasFix_ = false;
+            latestFix_.valid = false;
+            return;
+        }
 
-    if (fields[2][0] != 'A') {
-        hasFix_ = false;
-        return;
-    }
+        double latitude = 0.0;
+        double longitude = 0.0;
+        if (!parseCoordinate(fields[3], fields[4], &latitude) ||
+            !parseCoordinate(fields[5], fields[6], &longitude)) {
+            return;
+        }
 
-    double latitude = 0.0;
-    double longitude = 0.0;
-    if (!parseCoordinate(fields[3], fields[4], &latitude) ||
-        !parseCoordinate(fields[5], fields[6], &longitude) ||
-        latitude < -90.0 || latitude > 90.0 ||
-        longitude < -180.0 || longitude > 180.0) {
-        return;
-    }
+        const float rawSpeedMps =
+            static_cast<float>(std::strtod(fields[7], nullptr)) * kKnotsToMetersPerSecond;
 
-    latestFix_.latitudeDegrees = latitude;
-    latestFix_.longitudeDegrees = longitude;
-    latestFix_.speedMetersPerSecond =
-        static_cast<float>(std::strtod(fields[7], nullptr)) * kKnotsToMetersPerSecond;
-    latestFix_.valid = true;
-    lastFixAt_ = xTaskGetTickCount();
-    hasFix_ = true;
+        latestFix_.latitudeDegrees = latitude;
+        latestFix_.longitudeDegrees = longitude;
+        // Áp dụng bộ lọc Deadband: Nếu vận tốc < 0.3 m/s (nhiễu đứng yên) thì gán về 0.0
+        latestFix_.speedMetersPerSecond = (rawSpeedMps >= kMinValidSpeedMps) ? rawSpeedMps : 0.0F;
+        latestFix_.valid = true;
+        lastFixAt_ = xTaskGetTickCount();
+        hasFix_ = true;
+    }
 }

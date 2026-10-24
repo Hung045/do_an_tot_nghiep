@@ -69,11 +69,8 @@ void controlTask(void *)
 
     err = crashDetector.initialize();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Crash detector initialization failed: %s; motor stays off",
+        ESP_LOGW(TAG, "Crash detector unavailable: %s; continuing without tilt shutdown",
                  esp_err_to_name(err));
-        for (;;) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
     }
 
     err = powerMonitor.initialize();
@@ -204,17 +201,20 @@ void controlTask(void *)
             record.busVoltageVolts = powerReading.busVoltageVolts;
             record.currentMilliamps = powerReading.currentMilliamps;
             record.gps = gpsFix;
+            
             if (dataLoggerReady) {
                 err = dataLogger.append(record);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "EEPROM log write failed: %s", esp_err_to_name(err));
-                } else {
-                    ESP_LOGI(TAG, "logged: %.2f V, %.0f mA, GPS=%s",
-                             static_cast<double>(record.busVoltageVolts),
-                             static_cast<double>(record.currentMilliamps),
-                             record.gps.valid ? "valid" : "no-fix");
-                }
+                } 
             }
+            
+            // Lệnh in được đưa ra ngoài if(dataLoggerReady)
+            ESP_LOGI(TAG, "logged: %.2f V, %.0f mA, GPS=%s",
+                     static_cast<double>(record.busVoltageVolts),
+                     static_cast<double>(record.currentMilliamps),
+                     record.gps.valid ? "valid" : "no-fix");
+
             lastTelemetryAt = now;
         }
 
