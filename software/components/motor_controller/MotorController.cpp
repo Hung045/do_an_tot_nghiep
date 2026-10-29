@@ -8,16 +8,20 @@
 namespace {
 
 constexpr uint32_t kPwmMaximumDuty = (1U << DEMO_PWM_RESOLUTION_BITS) - 1U;
+static_assert(DEMO_THROTTLE_ADC_MIN >= 0 &&
+              DEMO_THROTTLE_ADC_MIN < DEMO_THROTTLE_ADC_MAX &&
+              DEMO_THROTTLE_ADC_MAX <= 4095, "Invalid throttle ADC calibration");
 
 } // namespace
 
 esp_err_t MotorController::initialize()
 {
-    esp_err_t err = gpio_set_direction(DEMO_RELAY_GPIO, GPIO_MODE_OUTPUT);
+    // Preload the inactive level before enabling output (especially active-low).
+    esp_err_t err = setMotorPowerEnabled(false);
     if (err != ESP_OK) {
         return err;
     }
-    err = setMotorPowerEnabled(false);
+    err = gpio_set_direction(DEMO_RELAY_GPIO, GPIO_MODE_OUTPUT);
     if (err != ESP_OK) {
         return err;
     }
@@ -60,9 +64,9 @@ esp_err_t MotorController::initialize()
     return ledc_channel_config(&motorChannel);
 }
 
-esp_err_t MotorController::readThrottlePercent(uint32_t *percent)
+esp_err_t MotorController::readThrottleRaw(int *raw)
 {
-    if (percent == nullptr) {
+    if (raw == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -70,13 +74,31 @@ esp_err_t MotorController::readThrottlePercent(uint32_t *percent)
         return ESP_ERR_INVALID_STATE;
     }
 
+    return adc_oneshot_read(adcHandle_, DEMO_THROTTLE_ADC_CHANNEL, raw);
+}
+
+esp_err_t MotorController::readThrottlePercent(uint32_t *percent, int *rawSample)
+{
+    if (percent == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
     int raw = 0;
-    const esp_err_t err = adc_oneshot_read(adcHandle_, DEMO_THROTTLE_ADC_CHANNEL, &raw);
+    const esp_err_t err = readThrottleRaw(&raw);
     if (err != ESP_OK) {
         return err;
     }
 
-    *percent = (static_cast<uint32_t>(raw) * 100U) / 4095U;
+    if (rawSample != nullptr) {
+        *rawSample = raw;
+    }
+    if (raw <= DEMO_THROTTLE_ADC_MIN) {
+        *percent = 0;
+    } else if (raw >= DEMO_THROTTLE_ADC_MAX) {
+        *percent = 100;
+    } else {
+        *percent = static_cast<uint32_t>(raw - DEMO_THROTTLE_ADC_MIN) * 100U /
+                   (DEMO_THROTTLE_ADC_MAX - DEMO_THROTTLE_ADC_MIN);
+    }
     return ESP_OK;
 }
 
@@ -97,6 +119,15 @@ esp_err_t MotorController::setPwmDuty(uint32_t channel, uint32_t percent)
 esp_err_t MotorController::setMotorDutyPercent(uint32_t percent)
 {
     return setPwmDuty(LEDC_CHANNEL_0, percent);
+}
+
+esp_err_t MotorController::setMotorDutyPermille(uint32_t permille)
+{
+    if (permille > 1000U) return ESP_ERR_INVALID_ARG;
+    const uint32_t duty = (permille * kPwmMaximumDuty + 500U) / 1000U;
+    esp_err_t err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
+    if (err != ESP_OK) return err;
+    return ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 }
 
 esp_err_t MotorController::setMotorPowerEnabled(bool enabled)
