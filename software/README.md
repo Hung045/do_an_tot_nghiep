@@ -7,12 +7,12 @@ system.
 ## Project structure
 
 ```text
-do_an_tn/
+software/
 ├── CMakeLists.txt
 ├── sdkconfig.defaults
 ├── main/
 │   ├── CMakeLists.txt           Dependencies for the app component
-│   └── main.cpp                 app_main creates the FreeRTOS control task
+│   └── main.cpp                 app_main runs a minimal module test
 └── components/
     ├── board_config/            Shared default GPIO and peripheral settings
     ├── crash_detector/          MPU6050 tilt measurement and crash threshold
@@ -21,31 +21,84 @@ do_an_tn/
     ├── power_monitor/           INA226 register driver and configurable shunt calibration
     ├── gps_tracker/             NEO-6M UART/NMEA RMC+GGA reader
     ├── data_logger/             AT24C256 CRC-protected circular telemetry log
-    ├── telemetry_link/          MQTT/event publishing interface scaffold
+    ├── telemetry_link/          Wi-Fi and MQTT telemetry/event publishing
     └── project_types/            Shared telemetry and event data types
 ```
 
 Each hardware/feature component owns its `CMakeLists.txt`, public headers in
 `include/`, and implementation source. `board_config` and `project_types` are
-header-only shared components. `main.cpp` coordinates the demo rather than
-containing sensor drivers. The prototype uses one FreeRTOS control task. I2C
-devices are accessed sequentially from that task; add a shared mutex or a
-single bus-owner task before moving access into concurrent tasks.
+header-only shared components. Test modules directly from `main/main.cpp`;
+there are no separate example projects or selectable test modes.
 
-## Implemented prototype
+## Current main: throttle-controlled motor bench test
 
-- Read a throttle potentiometer using ADC1.
-- Drive motor and headlight driver inputs using separate LEDC timers.
-- Read MPU6050 acceleration over I2C and detect sustained tilt over 60 degrees.
-- Keep the motor relay off at startup; arm only after the throttle stays near
-  zero.
-- Latch the motor off after a sustained tilt threshold or sensor read failure.
-- Print basic status to the serial console.
+PWM frequency is temporarily 1 kHz (previously 20 kHz) to diagnose the
+LR7843 output appearing near supply voltage at low duty. Compare settled
+10%, 20%, and 30% duty readings and motor response; a DC meter does not
+verify waveform quality. This shared frequency also applies to the headlight
+driver when it is initialized. The current main only initializes the motor.
 
-`PowerMonitor`, `GpsTracker`, and `DataLogger` now contain initial drivers.
-`TelemetryLink` remains an interface-only scaffold; Wi-Fi/MQTT, dashboard,
-and email alerts are not implemented. Shared pin defaults and device settings
-are in `components/board_config/include/BoardConfig.h`.
+`main/main.cpp` starts with relay OFF and PWM zero. Hold throttle at 0-2%
+for one continuous second to arm, then raise it to at least 5% to start.
+The relay closes first; PWM starts after a 100 ms settling interval.
+PWM uses 0.1% command steps with the existing 10-bit LEDC timer. Raw ADC is
+mapped before rounding and smoothed with an EMA (alpha 0.2 per 20 ms).
+Duty rises by at most 1 percentage point per iteration and falls by at most
+2 points. A full-scale rise takes about 2 s plus relay/filter latency.
+Starting also requires filtered throttle >=5%. Stop and fault paths bypass
+the ramp; the existing 200 ms stop confirmation uses unfiltered input.
+Short low-input glitches hold the filter and PWM; confirmed stops clear both.
+Logs show raw throttle, filtered throttle and PWM with one decimal place.
+The 50-kohm potentiometer still uses the configured ADC endpoints; resistance
+is not a multiplier for duty. Wire its ends to 3V3/GND and wiper to GPIO34.
+This is open-loop duty control, not proportional measured motor speed.
+The startup lock, 5% start threshold and relay settling delay still apply.
+Returning to 0-2% for 200 ms sets PWM zero
+before opening the relay and returns directly to READY. The one-second
+low-throttle hold is required only at startup/reset, not after normal stops.
+ADC or output-command errors latch a stop until reset, retrying both stop
+commands. The control loop runs every 20 ms. Relay control is active-low.
+Short low-throttle glitches hold the previous PWM command; a sustained low
+input stops after 200 ms from its first sample (plus sampling/scheduling latency).
+ADC faults bypass this debounce. Confirmed stops log immediately.
+Every 1 second, it logs throttle raw ADC and percent from the same sample,
+alongside the relay and PWM commands and LOCKED/READY/RELAY_WAIT/RUNNING state.
+Command values are not physical feedback from the relay contacts or PWM pin.
+MPU6050, GPS, EEPROM, INA226, headlight, and MQTT are not initialized.
+
+Initially verify all commands with motor power disconnected. Full throttle
+now commands 100% duty; there is no motor current limit. Fit an appropriately rated flyback diode and
+fuse before powered testing; this firmware does not provide overcurrent
+protection or detect a disconnected/floating throttle input reliably.
+Identify the module terminals by their printed labels, not physical position.
+Supply the relay module at its rated 5 V, connect control GND to ESP32 GND,
+and connect IN to GPIO27 only after verifying 3.3 V input compatibility and
+that IN does not expose ESP32 to 5 V. Use a separate regulated relay supply
+if needed; do not connect its positive output to ESP32 3V3.
+Use a continuity meter on isolated COM-NO contacts: open when off, closed
+when on. Serial logs and a clicking sound alone do not verify the contacts.
+Flash and open Monitor. Verify high throttle at reset stays LOCKED/OFF/0%,
+low throttle for one second produces READY, and returning to low throttle
+stops output. EN/RESET restarts the startup lock. Software cannot guarantee
+relay state before GPIO initialization; verify the hardware default state.
+
+To test another module, call its API from `main/main.cpp` and update
+`main/CMakeLists.txt` dependencies. The component drivers remain available;
+full-system coordination must be added when integrating the tested modules.
+INA226 and EEPROM require an initialized I2C bus; currently the MPU6050
+component owns bus initialization. Coordinate this before testing them alone.
+
+`PowerMonitor`, `GpsTracker`, and `DataLogger` contain initial drivers.
+When called by the application, `TelemetryLink` can connect to Wi-Fi and publish telemetry/event JSON messages
+over MQTT. Configure its Wi-Fi SSID, password, and broker URI with
+**ESP-IDF: SDK Configuration editor (menuconfig)** under **Vehicle telemetry**.
+The local `sdkconfig` may contain the Wi-Fi password and must not be committed.
+Initialize NVS before starting Wi-Fi when integrating this component; the
+current motor-only main does not initialize NVS or telemetry.
+Telemetry is published as JSON to `vehicle/telemetry` (QoS 0); crash events are
+published to `vehicle/event` (QoS 1). Dashboard and email alerts are not
+implemented. Shared pin defaults and device settings are in
+`components/board_config/include/BoardConfig.h`.
 
 ## Component hand-off
 
@@ -57,7 +110,7 @@ are in `components/board_config/include/BoardConfig.h`.
 | `power_monitor` | `PowerMonitor.cpp` | Confirm module address/shunt calibration; calibrate battery state-of-charge model |
 | `gps_tracker` | `GpsTracker.cpp` | Test UART2 wiring and NMEA fixes outdoors; validate stale-fix handling |
 | `data_logger` | `DataLogger.cpp` | Test page writes, power-loss recovery, and circular-log reads on the actual EEPROM |
-| `telemetry_link` | `TelemetryLink.cpp` | Add Wi-Fi/MQTT lifecycle, payload format and reconnect policy |
+| `telemetry_link` | `TelemetryLink.cpp` | Configure a private broker if needed; verify topic/payload and reconnect behavior |
 
 Keep motor cut-off local and independent of Wi-Fi. Coordinate I2C ownership
 before enabling concurrent sensor and EEPROM tasks; protect a shared bus with
@@ -102,7 +155,7 @@ At a 1 Hz sampling rate, 32 KiB stores about 8.5 minutes of history. Verify the
 EEPROM address pins, page size, and I2C voltage before first use.
 
 Power the potentiometer from 3.3 V and GND; never connect its wiper to 5 V.
-The throttle is on GPIO34 / ADC1_CH6. Drive the JGB37-310 motor through the
+The throttle is on GPIO34 / ADC1_CH6. Drive the JGA45-370 motor (12 V, marked 1364 rpm) through the
 LR7843 MOSFET module and the relay's appropriately rated contacts; drive the
 12 V headlight LED through a suitable current-limited driver and MOSFET module.
 Never connect motor or lamp current directly to ESP32 pins. Check relay active
@@ -114,9 +167,9 @@ low-voltage electronics supply, not for powering the motor or headlight.
 
 ## Build in VS Code
 
-1. Open this `do_an_tn` directory as the ESP-IDF project (not the repository
+1. Open this `software` directory as the ESP-IDF project (not the repository
    parent directory).
-2. Use ESP-IDF 5.3.x and select target `esp32`. `sdkconfig.defaults` selects
+2. Use ESP-IDF 5.5.5 and select target `esp32`. `sdkconfig.defaults` selects
    this target for a fresh build.
 3. Run **ESP-IDF: Build your project**.
 4. Connect the hardware, keep the driven wheel raised, then flash and monitor.
@@ -135,3 +188,20 @@ verify the relay's de-energized state before connecting the motor.
 Before a hardware test, review pin assignments, relay polarity, driver ratings,
 and the physical emergency cut-off. Do not use this prototype on a road-going
 vehicle.
+
+## Sharing this workspace with Git
+
+Commit source files, component CMakeLists, Kconfig.projbuild, README,
+.gitignore and sdkconfig.defaults. Keep all component folders for integration;
+not being initialized by the current main does not make a module obsolete.
+The portable .clangd and .vscode/launch.json are optional editor helpers.
+
+Do not commit build/, build-backup-*/, .cache/, sdkconfig, sdkconfig.old,
+local credentials or machine-specific VS Code settings. These remain local.
+Use ESP-IDF build commands rather than generic CMake/MinGW configuration in
+this workspace to avoid conflicting build generators.
+
+Before sharing, run `git diff --check`, build using ESP-IDF, and review
+`git status --short` and `git diff`. Configure each developer's Wi-Fi and
+broker settings locally through menuconfig. Hardware test results apply to
+the current motor bench setup; the other modules still need integration tests.

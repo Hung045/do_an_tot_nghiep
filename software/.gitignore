@@ -13,6 +13,7 @@ Desktop.ini
 
 # ESP-IDF build output and generated configuration
 build/
+/build-backup-*/
 **/build/
 sdkconfig
 sdkconfig.old
@@ -42,6 +43,13 @@ env/
 
 # Local language-server caches
 .ccls-cache/
+.cache/
+
+# Local environment credentials (share examples only)
+.env
+.env.*
+!.env.example
+!.env.sample
 
 # Machine-specific VS Code settings
 .vscode/settings.json

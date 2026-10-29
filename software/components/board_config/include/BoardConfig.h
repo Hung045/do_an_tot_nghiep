@@ -6,6 +6,9 @@
 // the final wiring. Keep the throttle on ADC1 if Wi-Fi will be enabled.
 #define DEMO_THROTTLE_ADC_CHANNEL ADC_CHANNEL_6
 #define DEMO_THROTTLE_GPIO GPIO_NUM_34
+// Replace with the measured ADC endpoints of the potentiometer.
+#define DEMO_THROTTLE_ADC_MIN 0
+#define DEMO_THROTTLE_ADC_MAX 4095
 #define DEMO_MOTOR_PWM_GPIO GPIO_NUM_25
 #define DEMO_HEADLIGHT_PWM_GPIO GPIO_NUM_26
 #define DEMO_RELAY_GPIO GPIO_NUM_27
@@ -34,7 +37,8 @@
 #define DEMO_BATTERY_FULL_MILLIVOLTS 12600
 
 // Set to 0 if the relay module is active-low.
-#define DEMO_RELAY_ACTIVE_LEVEL 1
+#define DEMO_RELAY_ACTIVE_LEVEL 0
 
-#define DEMO_PWM_FREQUENCY_HZ 20000
+// Diagnostic frequency for the LR7843 module; confirm output on hardware.
+#define DEMO_PWM_FREQUENCY_HZ 1000
 #define DEMO_PWM_RESOLUTION_BITS 10
