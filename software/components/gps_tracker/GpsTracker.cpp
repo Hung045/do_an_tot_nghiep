@@ -13,7 +13,6 @@ namespace {
 constexpr size_t kUartBufferSize = 1024;
 constexpr TickType_t kFixMaximumAge = pdMS_TO_TICKS(5000);
 constexpr float kKnotsToMetersPerSecond = 0.514444F;
-// Bộ lọc ngưỡng chết (Deadband): Triệt tiêu nhiễu vận tốc ảo (< 0.3 m/s ~ 1 km/h) khi xe đứng yên
 constexpr float kMinValidSpeedMps = 0.30F;
 
 bool parseCoordinate(const char *value, const char *hemisphere, double *degrees)
@@ -79,7 +78,7 @@ bool verifyChecksum(char *sentence)
     return checksum == static_cast<uint8_t>(expected);
 }
 
-} // namespace
+} 
 
 esp_err_t GpsTracker::initialize()
 {
@@ -107,11 +106,10 @@ esp_err_t GpsTracker::initialize()
         return err;
     }
     
-    // Nếu driver đã được cài đặt trước đó thì xóa buffer cũ thay vì báo lỗi
     if (!uart_is_driver_installed(uartPort)) {
         err = uart_driver_install(
             uartPort,
-            kUartBufferSize * 2U, // Tăng gấp đôi Ring Buffer RX để không bị tràn khi quét EEPROM
+            kUartBufferSize * 2U, 
             0,
             0,
             nullptr,
@@ -169,7 +167,6 @@ esp_err_t GpsTracker::readFix(GpsFix *fix)
         hasFix_ = false;
         latestFix_.valid = false;
         *fix = {};
-        // Giữ lại thông tin số vệ tinh đang nhìn thấy ngay cả khi chưa chốt được Fix
         fix->satellitesInView = latestFix_.satellitesInView;
         return ESP_ERR_NOT_FOUND;
     }
@@ -191,7 +188,7 @@ void GpsTracker::consumeByte(uint8_t byte)
     }
 
     if (byte == '\n' || byte == '\r') {
-        if (lineLength_ > 6) { // Một bản tin NMEA tối thiểu phải dài hơn 6 ký tự ($GPGGA*xx)
+        if (lineLength_ > 6) { 
             line_[lineLength_] = '\0';
             parseLine();
         }
@@ -202,7 +199,7 @@ void GpsTracker::consumeByte(uint8_t byte)
     if (lineLength_ + 1 < sizeof(line_)) {
         line_[lineLength_++] = static_cast<char>(byte);
     } else {
-        lineLength_ = 0; // Tràn dòng do nhiễu -> hủy bỏ câu hiện tại
+        lineLength_ = 0; 
     }
 }
 
@@ -212,7 +209,6 @@ void GpsTracker::parseLine()
         return;
     }
 
-    // Tăng lên 24 trường để chứa dư dả mọi câu lệnh NMEA 0183 (GPGGA có 15 trường, GPGSV có 20 trường)
     char *fields[24] = {};
     size_t fieldCount = 1;
     fields[0] = line_ + 1;
@@ -225,14 +221,12 @@ void GpsTracker::parseLine()
         }
     }
 
-    // 1. Giải mã bản tin GGA (GPGGA hoặc GNGGA): Lấy số lượng vệ tinh & dự phòng tọa độ
     if (std::strcmp(fields[0], "GPGGA") == 0 ||
         std::strcmp(fields[0], "GNGGA") == 0) {
         if (fieldCount > 7) {
             latestFix_.satellitesInView =
                 static_cast<uint32_t>(std::strtoul(fields[7], nullptr, 10));
             
-            // Trường số 6 là Fix Quality (0 = Invalid, 1 = GPS fix, 2 = DGPS fix)
             const uint32_t fixQuality = static_cast<uint32_t>(std::strtoul(fields[6], nullptr, 10));
             if (fixQuality > 0U) {
                 double latitude = 0.0;
@@ -250,12 +244,10 @@ void GpsTracker::parseLine()
         return;
     }
 
-    // 2. Giải mã bản tin RMC (GPRMC hoặc GNRMC): Lấy trạng thái, tọa độ và vận tốc di chuyển
     if ((std::strcmp(fields[0], "GPRMC") == 0 ||
          std::strcmp(fields[0], "GNRMC") == 0) &&
         fieldCount >= 9) {
         
-        // Trường số 2: 'A' = Active (Hợp lệ), 'V' = Void (Chưa bắt được sóng)
         if (fields[2][0] != 'A') {
             hasFix_ = false;
             latestFix_.valid = false;
@@ -274,7 +266,6 @@ void GpsTracker::parseLine()
 
         latestFix_.latitudeDegrees = latitude;
         latestFix_.longitudeDegrees = longitude;
-        // Áp dụng bộ lọc Deadband: Nếu vận tốc < 0.3 m/s (nhiễu đứng yên) thì gán về 0.0
         latestFix_.speedMetersPerSecond = (rawSpeedMps >= kMinValidSpeedMps) ? rawSpeedMps : 0.0F;
         latestFix_.valid = true;
         lastFixAt_ = xTaskGetTickCount();

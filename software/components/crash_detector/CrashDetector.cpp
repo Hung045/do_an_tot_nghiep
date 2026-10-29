@@ -12,7 +12,7 @@ namespace {
 
 constexpr i2c_port_t kI2cPort = I2C_NUM_0;
 constexpr uint8_t kWhoAmIRegister = 0x75;
-constexpr uint8_t kConfigRegister = 0x1A; // Thanh ghi bộ lọc số DLPF
+constexpr uint8_t kConfigRegister = 0x1A; 
 constexpr uint8_t kAccelDataRegister = 0x3B;
 constexpr uint8_t kPowerManagementRegister = 0x6B;
 constexpr float kRadiansToDegrees = 180.0F / 3.14159265F;
@@ -39,7 +39,6 @@ esp_err_t writeRegister(uint8_t registerAddress, uint8_t value)
 
 esp_err_t CrashDetector::initialize()
 {
-    // Khởi tạo I2C dùng chung và Mutex an toàn (không bao giờ báo lỗi trùng driver)
     BoardI2c::getMutex();
 
     uint8_t deviceId = 0;
@@ -72,7 +71,6 @@ esp_err_t CrashDetector::initialize()
         return ESP_OK;
     }
 
-    // Đánh thức MPU6050 và bật bộ lọc thông thấp DLPF 10Hz chống rung động cơ JGB37-310
     err = writeRegister(kPowerManagementRegister, 0x00);
     if (err != ESP_OK) {
         available_ = false;

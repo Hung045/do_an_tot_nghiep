@@ -100,7 +100,7 @@ uint16_t recordAddress(uint32_t index)
     return static_cast<uint16_t>(kDataStartAddress + (index * kRecordSize));
 }
 
-} // namespace
+} 
 
 esp_err_t DataLogger::initialize()
 {

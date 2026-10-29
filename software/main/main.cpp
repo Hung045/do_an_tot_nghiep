@@ -1,12 +1,10 @@
 #include <cmath>
 #include <cstdint>
 
+#include "BoardConfig.h"
 #include "CrashDetector.h"
 #include "DataLogger.h"
 #include "GpsTracker.h"
-#include "HeadlightController.h"
-#include "MotorController.h"
-#include "PowerMonitor.h"
 #include "ProjectTypes.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -14,18 +12,13 @@
 
 namespace {
 
-constexpr char TAG[] = "vehicle_demo";
-constexpr uint32_t kLoopPeriodMs = 50;
-constexpr uint32_t kThrottleReleaseMs = 1000;
-constexpr uint32_t kTelemetryPeriodMs = 1000;
-constexpr float kMaximumDimmingTiltDegrees = 60.0F;
+constexpr char TAG[] = "my_3_modules_test";
+constexpr uint32_t kLoopPeriodMs = 50;          
+constexpr uint32_t kTelemetryPeriodMs = 1000;    
 
 CrashDetector crashDetector;
 DataLogger dataLogger;
 GpsTracker gpsTracker;
-MotorController motorController;
-HeadlightController headlightController;
-PowerMonitor powerMonitor;
 
 void latchSafetyFault(bool *faultLatched, const char *reason)
 {
@@ -34,71 +27,44 @@ void latchSafetyFault(bool *faultLatched, const char *reason)
     }
 
     *faultLatched = true;
-    esp_err_t err = motorController.setMotorDutyPercent(0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set motor PWM to zero: %s", esp_err_to_name(err));
-    }
-    err = motorController.setMotorPowerEnabled(false);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to disable motor relay: %s", esp_err_to_name(err));
-    }
-    err = headlightController.setBrightnessPercent(0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to turn off headlight PWM: %s", esp_err_to_name(err));
-    }
-    ESP_LOGE(TAG, "SAFETY LOCK: %s. Restart the board after checking the setup.", reason);
+    ESP_LOGE(TAG, "SAFETY LOCK kích hoạt: %s. (Nếu có động cơ, Relay sẽ bị ngắt tại đây!)", reason);
 }
 
 void controlTask(void *)
 {
-    esp_err_t err = motorController.initialize();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Motor controller initialization failed: %s", esp_err_to_name(err));
-        for (;;) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-    }
-
-    err = headlightController.initialize();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Headlight controller initialization failed: %s", esp_err_to_name(err));
-        for (;;) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-    }
+    esp_err_t err;
 
     err = crashDetector.initialize();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Crash detector unavailable: %s; continuing without tilt shutdown",
-                 esp_err_to_name(err));
+        ESP_LOGW(TAG, "Crash detector (MPU6050) unavailable: %s", esp_err_to_name(err));
     }
 
-    err = powerMonitor.initialize();
-    const bool powerMonitorReady = err == ESP_OK;
-    if (!powerMonitorReady) {
-        ESP_LOGW(TAG, "INA226 unavailable: %s", esp_err_to_name(err));
-    }
     err = gpsTracker.initialize();
-    const bool gpsTrackerReady = err == ESP_OK;
+    const bool gpsTrackerReady = (err == ESP_OK);
     if (!gpsTrackerReady) {
         ESP_LOGW(TAG, "NEO-6M unavailable: %s", esp_err_to_name(err));
     }
+
     err = dataLogger.initialize();
-    const bool dataLoggerReady = err == ESP_OK;
+    const bool dataLoggerReady = (err == ESP_OK);
     if (!dataLoggerReady) {
         ESP_LOGW(TAG, "AT24C256 unavailable: %s", esp_err_to_name(err));
+    } else {
+        TelemetryRecord lastSaved = {};
+        if (dataLogger.readLatest(&lastSaved) == ESP_OK) {
+            ESP_LOGI(TAG, "[EEPROM Khôi phục] Uptime: %lu ms | Tilt: %.1f deg | GPS: %s (Sat=%lu)",
+                     static_cast<unsigned long>(lastSaved.uptimeMilliseconds),
+                     static_cast<double>(lastSaved.tiltDegrees),
+                     lastSaved.gps.valid ? "VALID" : "NO-FIX",
+                     static_cast<unsigned long>(lastSaved.gps.satellitesInView));
+        }
     }
 
-    ESP_LOGI(TAG, "Demo ready. Keep throttle at zero for 1 second to arm.");
+    ESP_LOGI(TAG, "=== SẴN SÀNG TEST 3 MODULE (CRASH, LOGGER, GPS) ===");
 
     bool faultLatched = false;
-    bool armed = false;
-    uint32_t filteredThrottle = 0;
-    uint32_t lightDuty = 0;
-    TickType_t throttleReleasedAt = 0;
     TickType_t lastStatusAt = xTaskGetTickCount();
     TickType_t lastTelemetryAt = lastStatusAt;
-    PowerReading powerReading = {};
     GpsFix gpsFix = {};
 
     for (;;) {
@@ -108,112 +74,60 @@ void controlTask(void *)
 
         err = crashDetector.update(&tiltDegrees, &crashDetected);
         if (err != ESP_OK) {
-            latchSafetyFault(&faultLatched, "MPU6050 read failed");
+            latchSafetyFault(&faultLatched, "MPU6050 rớt kết nối I2C");
         } else if (crashDetected) {
-            latchSafetyFault(&faultLatched, "tilt exceeded 60 degrees");
-        }
-
-        uint32_t throttlePercent = 0;
-        err = motorController.readThrottlePercent(&throttlePercent);
-        if (err != ESP_OK) {
-            latchSafetyFault(&faultLatched, "throttle ADC read failed");
-            throttlePercent = 0;
-        }
-        filteredThrottle = ((filteredThrottle * 3U) + throttlePercent) / 4U;
-
-        if (!faultLatched && !armed) {
-            if (filteredThrottle <= 5U) {
-                if (throttleReleasedAt == 0) {
-                    throttleReleasedAt = now;
-                } else if ((now - throttleReleasedAt) >= pdMS_TO_TICKS(kThrottleReleaseMs)) {
-                    err = motorController.setMotorPowerEnabled(true);
-                    if (err == ESP_OK) {
-                        armed = true;
-                        ESP_LOGI(TAG, "System armed.");
-                    } else {
-                        latchSafetyFault(&faultLatched, "failed to enable motor relay");
-                    }
-                }
-            } else {
-                throttleReleasedAt = 0;
-            }
-        }
-
-        err = motorController.setMotorDutyPercent(
-            (armed && !faultLatched) ? filteredThrottle : 0U);
-        if (err != ESP_OK) {
-            latchSafetyFault(&faultLatched, "motor PWM update failed");
-        }
-
-        const float limitedTilt = (tiltDegrees < kMaximumDimmingTiltDegrees)
-                                      ? tiltDegrees
-                                      : kMaximumDimmingTiltDegrees;
-        const uint32_t targetLightDuty = static_cast<uint32_t>(
-            100.0F - ((limitedTilt / kMaximumDimmingTiltDegrees) * 60.0F));
-        if (lightDuty < targetLightDuty) {
-            lightDuty += (targetLightDuty - lightDuty > 2U)
-                             ? 2U
-                             : targetLightDuty - lightDuty;
-        } else if (lightDuty > targetLightDuty) {
-            lightDuty -= (lightDuty - targetLightDuty > 2U)
-                             ? 2U
-                             : lightDuty - targetLightDuty;
-        }
-
-        err = headlightController.setBrightnessPercent(faultLatched ? 0U : lightDuty);
-        if (err != ESP_OK) {
-            latchSafetyFault(&faultLatched, "headlight PWM update failed");
+            latchSafetyFault(&faultLatched, "Xe nghiêng vượt ngưỡng 60 độ!");
         }
 
         if ((now - lastStatusAt) >= pdMS_TO_TICKS(1000)) {
-            ESP_LOGI(TAG, "tilt=%.1f deg, throttle=%lu%%, motor=%s, state=%s",
+            ESP_LOGI(TAG, "Góc nghiêng: %.1f deg | Trạng thái: %s",
                      static_cast<double>(tiltDegrees),
-                     static_cast<unsigned long>(filteredThrottle),
-                     (armed && !faultLatched) ? "enabled" : "off",
-                     faultLatched ? "LOCKED" : (armed ? "ARMED" : "WAIT_THROTTLE_ZERO"));
+                     faultLatched ? "LOCKED (Bị ngã/Lỗi)" : "BÌNH THƯỜNG");
             lastStatusAt = now;
         }
 
         if ((now - lastTelemetryAt) >= pdMS_TO_TICKS(kTelemetryPeriodMs)) {
-            if (powerMonitorReady) {
-                err = powerMonitor.read(&powerReading);
-                if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "INA226 read failed: %s", esp_err_to_name(err));
-                    powerReading = {};
-                }
-            }
-
             if (gpsTrackerReady) {
                 err = gpsTracker.readFix(&gpsFix);
-                if (err == ESP_ERR_NOT_FOUND) {
-                    gpsFix = {};
-                } else if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "GPS read failed: %s", esp_err_to_name(err));
+                if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+                    ESP_LOGW(TAG, "Lỗi đọc GPS: %s", esp_err_to_name(err));
                     gpsFix = {};
                 }
             }
 
             TelemetryRecord record = {};
-            record.uptimeMilliseconds =
-                static_cast<uint32_t>(now * portTICK_PERIOD_MS);
+            record.uptimeMilliseconds = static_cast<uint32_t>(now * portTICK_PERIOD_MS);
             record.tiltDegrees = tiltDegrees;
-            record.throttlePercent = filteredThrottle;
-            record.busVoltageVolts = powerReading.busVoltageVolts;
-            record.currentMilliamps = powerReading.currentMilliamps;
+            record.throttlePercent = 0;       // Giá trị giả lập tay ga
+            record.busVoltageVolts = 12.0F;   // Giá trị giả lập điện áp pin 3S
+            record.currentMilliamps = 0.0F;   // Giá trị giả lập dòng điện
             record.gps = gpsFix;
-            
+
+            bool eepromWriteOk = false;
             if (dataLoggerReady) {
                 err = dataLogger.append(record);
-                if (err != ESP_OK) {
-                    ESP_LOGE(TAG, "EEPROM log write failed: %s", esp_err_to_name(err));
-                } 
+                if (err == ESP_OK) {
+                    eepromWriteOk = true;
+                } else {
+                    ESP_LOGE(TAG, "Lỗi ghi EEPROM: %s", esp_err_to_name(err));
+                }
             }
-            
-            // Lệnh in được đưa ra ngoài if(dataLoggerReady)
-            ESP_LOGI(TAG, "logged: %.2f V, %.0f mA, GPS=%s",
-                     static_cast<double>(record.busVoltageVolts),
-                     static_cast<double>(record.currentMilliamps),
-                     record.gps.valid ? "valid" : "no-fix");
+
+            const char *eepromStatus = !dataLoggerReady ? "Chưa cắm EEPROM"
+                                                        : (eepromWriteOk ? "Đã ghi EEPROM" : "Ghi EEPROM lỗi");
+
+            if (record.gps.valid) {
+                ESP_LOGI(TAG, "-> %s | GPS BẮT ĐƯỢC (Sat=%lu, Lat=%.6f, Lon=%.6f, Spd=%.1f m/s)",
+                         eepromStatus,
+                         static_cast<unsigned long>(record.gps.satellitesInView),
+                         record.gps.latitudeDegrees,
+                         record.gps.longitudeDegrees,
+                         static_cast<double>(record.gps.speedMetersPerSecond));
+            } else {
+                ESP_LOGI(TAG, "-> %s | GPS ĐANG TÌM SÓNG (Sat=%lu)",
+                         eepromStatus,
+                         static_cast<unsigned long>(record.gps.satellitesInView));
+            }
 
             lastTelemetryAt = now;
         }
@@ -222,11 +136,11 @@ void controlTask(void *)
     }
 }
 
-} // namespace
+} 
 
 extern "C" void app_main(void)
 {
-    if (xTaskCreate(controlTask, "vehicle_control", 6144, nullptr, 5, nullptr) != pdPASS) {
-        ESP_LOGE(TAG, "Could not create control task; motor outputs were not initialized");
+    if (xTaskCreate(controlTask, "test_my_modules", 6144, nullptr, 5, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Không thể tạo Task!");
     }
 }
