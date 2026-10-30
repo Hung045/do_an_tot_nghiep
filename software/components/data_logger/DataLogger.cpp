@@ -5,17 +5,20 @@
 
 #include "BoardConfig.h"
 #include "driver/i2c.h"
+#include "esp_log.h"
+#include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 namespace {
 
+constexpr i2c_port_t kI2cPort = I2C_NUM_0;
 constexpr uint32_t kRecordMagic = 0x314D4C54U;
 constexpr uint16_t kDataStartAddress = 0;
 constexpr uint16_t kRecordSize = 64;
 constexpr uint32_t kRecordCapacity =
     DEMO_AT24C256_CAPACITY_BYTES / kRecordSize;
-constexpr uint32_t kWriteCycleDelayMs = 10;
+constexpr uint32_t kWriteCycleDelayMs = 6;
 
 void putU32(uint8_t *data, uint32_t value)
 {
@@ -81,20 +84,15 @@ double getDouble(const uint8_t *data)
 
 uint32_t crc32(const uint8_t *data, size_t length)
 {
-    uint32_t crc = 0xFFFFFFFFU;
-    for (size_t i = 0; i < length; ++i) {
-        crc ^= data[i];
-        for (uint8_t bit = 0; bit < 8; ++bit) {
-            crc = (crc >> 1) ^ ((crc & 1U) ? 0xEDB88320U : 0U);
-        }
-    }
-    return ~crc;
+    return esp_rom_crc32_le(0U, data, static_cast<uint32_t>(length));
 }
 
 bool isValidRecord(const uint8_t *data)
 {
-    return getU32(data) == kRecordMagic &&
-           getU32(data + 60) == crc32(data, 60);
+    if (getU32(data) != kRecordMagic) {
+        return false;
+    }
+    return getU32(data + 60) == crc32(data, 60);
 }
 
 uint16_t recordAddress(uint32_t index)
@@ -102,10 +100,12 @@ uint16_t recordAddress(uint32_t index)
     return static_cast<uint16_t>(kDataStartAddress + (index * kRecordSize));
 }
 
-} // namespace
+}
 
 esp_err_t DataLogger::initialize()
 {
+    BoardI2c::getMutex();
+
     constexpr size_t kScanChunkSize = 256;
     constexpr size_t kDataSize = kRecordCapacity * kRecordSize;
     uint8_t chunk[kScanChunkSize] = {};
@@ -121,6 +121,7 @@ esp_err_t DataLogger::initialize()
             chunk,
             chunkLength);
         if (err != ESP_OK) {
+            initialized_ = false;
             return err;
         }
 
@@ -147,10 +148,15 @@ esp_err_t DataLogger::initialize()
         sequence_ = newestSequence;
         nextIndex_ = (newestIndex + 1U) % kRecordCapacity;
         recordCount_ = std::min(validRecordCount, kRecordCapacity);
+        ESP_LOGI("DataLogger", "Restored %lu records from EEPROM (latest seq=%lu, next slot=%lu)",
+                 static_cast<unsigned long>(recordCount_),
+                 static_cast<unsigned long>(sequence_),
+                 static_cast<unsigned long>(nextIndex_));
     } else {
         sequence_ = 0;
         nextIndex_ = 0;
         recordCount_ = 0;
+        ESP_LOGI("DataLogger", "EEPROM empty or unformatted; starting at sequence 0");
     }
     initialized_ = true;
     return ESP_OK;
@@ -175,6 +181,7 @@ esp_err_t DataLogger::append(const TelemetryRecord &record)
     putFloat(data + 20, record.busVoltageVolts);
     putFloat(data + 24, record.currentMilliamps);
     data[28] = record.gps.valid ? 1U : 0U;
+    data[29] = (record.tiltDegrees >= 60.0F) ? 1U : 0U;
     putDouble(data + 32, record.gps.latitudeDegrees);
     putDouble(data + 40, record.gps.longitudeDegrees);
     putFloat(data + 48, record.gps.speedMetersPerSecond);
@@ -237,12 +244,17 @@ esp_err_t DataLogger::readBytes(uint16_t address, uint8_t *data, size_t length)
         return ESP_ERR_INVALID_ARG;
     }
 
+    BoardI2c::LockGuard lock(pdMS_TO_TICKS(250));
+    if (!lock.isLocked()) {
+        return ESP_ERR_TIMEOUT;
+    }
+
     const uint8_t addressBytes[] = {
         static_cast<uint8_t>(address >> 8),
         static_cast<uint8_t>(address & 0xFFU),
     };
     return i2c_master_write_read_device(
-        I2C_NUM_0,
+        kI2cPort,
         DEMO_AT24C256_ADDRESS,
         addressBytes,
         sizeof(addressBytes),
@@ -271,16 +283,23 @@ esp_err_t DataLogger::writeBytes(
         transaction[1] = static_cast<uint8_t>(address & 0xFFU);
         std::memcpy(transaction + 2, data, chunkLength);
 
-        esp_err_t err = i2c_master_write_to_device(
-            I2C_NUM_0,
-            DEMO_AT24C256_ADDRESS,
-            transaction,
-            chunkLength + 2U,
-            pdMS_TO_TICKS(200));
-        if (err != ESP_OK) {
-            return err;
+        {
+            BoardI2c::LockGuard lock(pdMS_TO_TICKS(250));
+            if (!lock.isLocked()) {
+                return ESP_ERR_TIMEOUT;
+            }
+
+            esp_err_t err = i2c_master_write_to_device(
+                kI2cPort,
+                DEMO_AT24C256_ADDRESS,
+                transaction,
+                chunkLength + 2U,
+                pdMS_TO_TICKS(200));
+            if (err != ESP_OK) {
+                return err;
+            }
+            vTaskDelay(pdMS_TO_TICKS(kWriteCycleDelayMs));
         }
-        vTaskDelay(pdMS_TO_TICKS(kWriteCycleDelayMs));
 
         address = static_cast<uint16_t>(address + chunkLength);
         data += chunkLength;

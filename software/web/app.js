@@ -2,7 +2,7 @@
 
 const MAX_SAMPLES = 60;
 const STALE_AFTER_SECONDS = 5;
-const VALID_PHASES = ["LOCKED", "READY", "RELAY_WAIT", "RUNNING"];
+const VALID_PHASES = ["LOCKED", "READY", "RELAY_WAIT", "RUNNING", "FAULT_LOCKED"];
 const samples = [];
 const brokerHost = location.hostname || "127.0.0.1";
 const brokerUrl = `ws://${brokerHost}:9001`;
@@ -74,7 +74,8 @@ function validateTelemetry(data) {
 }
 
 function checkCommandState(data) {
-  const isOffPhase = data.phase === "LOCKED" || data.phase === "READY";
+  const isOffPhase = data.phase === "LOCKED" || data.phase === "READY" ||
+    data.phase === "FAULT_LOCKED";
   const inconsistent =
     (isOffPhase && (data.relay_cmd || data.pwm_pct > 0)) ||
     (data.phase === "RELAY_WAIT" && (!data.relay_cmd || data.pwm_pct > 0)) ||
@@ -85,6 +86,11 @@ function checkCommandState(data) {
       `Lệnh điều khiển không khớp trạng thái ${data.phase}. Kiểm tra Monitor và phần cứng; dashboard không xác nhận trạng thái thực tế.`,
       "danger"
     );
+    return;
+  }
+
+  if (data.phase === "FAULT_LOCKED") {
+    setAlert("Hệ thống đang khóa an toàn. Xem Monitor để biết nguyên nhân và reset sau khi đã xử lý lỗi.", "danger");
     return;
   }
 
@@ -137,6 +143,30 @@ function renderTelemetry(data) {
   updateFreshness();
 }
 
+function validateSystemTelemetry(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  const flags = [data.mpu_available, data.gps_available,
+    data.power_available, data.eeprom_available, data.gps_valid];
+  return flags.every(value => typeof value === "boolean") &&
+    (data.tilt_deg === null || Number.isFinite(data.tilt_deg)) &&
+    (data.bus_voltage_v === null || Number.isFinite(data.bus_voltage_v)) &&
+    (data.current_ma === null || Number.isFinite(data.current_ma));
+}
+
+function renderSystemTelemetry(data) {
+  show("mpu-status", data.mpu_available ? "Đã kết nối" : "Không phát hiện");
+  show("tilt", data.mpu_available && data.tilt_deg !== null
+    ? `${data.tilt_deg.toFixed(1)}°` : "—");
+  show("gps-status", data.gps_available ? "Đã khởi tạo" : "Không phát hiện");
+  show("gps-fix", !data.gps_available ? "—" : data.gps_valid
+    ? `${data.latitude_deg.toFixed(6)}, ${data.longitude_deg.toFixed(6)}`
+    : "Chưa có vị trí");
+  show("power-status", data.power_available ? "Đã kết nối" : "Không phát hiện");
+  show("power-reading", data.power_available && data.bus_voltage_v !== null && data.current_ma !== null
+    ? `${data.bus_voltage_v.toFixed(2)} V / ${data.current_ma.toFixed(0)} mA` : "—");
+  show("eeprom-status", data.eeprom_available ? "Sẵn sàng" : "Không phát hiện");
+}
+
 updateChart();
 updateFreshness();
 setInterval(updateFreshness, 1000);
@@ -155,10 +185,10 @@ if (typeof mqtt === "undefined") {
 
   client.on("connect", () => {
     setConnection("Đã nối broker · đang đăng ký topic…", "connecting");
-    client.subscribe("vehicle/telemetry", (error, granted) => {
+    client.subscribe("vehicle/#", (error, granted) => {
       if (error || !granted?.length || granted[0].qos === 128) {
         setConnection("Broker đã nối nhưng không đăng ký được topic.", "offline");
-        setAlert("Không nhận được quyền đọc vehicle/telemetry từ broker.", "danger");
+        setAlert("Không nhận được quyền đọc vehicle/# từ broker.", "danger");
         return;
       }
       setConnection("Broker đã kết nối · đang nghe telemetry", "online");
@@ -173,7 +203,6 @@ if (typeof mqtt === "undefined") {
   });
 
   client.on("message", (topic, message) => {
-    if (topic !== "vehicle/telemetry") return;
     let data;
     try {
       data = JSON.parse(message.toString());
@@ -181,10 +210,18 @@ if (typeof mqtt === "undefined") {
       setAlert("Không thể đọc bản tin telemetry JSON.", "danger");
       return;
     }
-    if (!validateTelemetry(data)) {
-      setAlert("Đã bỏ qua telemetry sai định dạng hoặc nằm ngoài giới hạn.", "danger");
-      return;
+    if (topic === "vehicle/motor") {
+      if (!validateTelemetry(data)) {
+        setAlert("Đã bỏ qua dữ liệu động cơ sai định dạng hoặc nằm ngoài giới hạn.", "danger");
+        return;
+      }
+      renderTelemetry(data);
+    } else if (topic === "vehicle/telemetry") {
+      if (!validateSystemTelemetry(data)) {
+        setAlert("Đã bỏ qua telemetry cảm biến sai định dạng.", "danger");
+        return;
+      }
+      renderSystemTelemetry(data);
     }
-    renderTelemetry(data);
   });
 }

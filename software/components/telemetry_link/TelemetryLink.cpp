@@ -14,6 +14,7 @@ namespace {
 
 constexpr char TAG[] = "telemetry_link";
 constexpr char kTelemetryTopic[] = "vehicle/telemetry";
+constexpr char kMotorTopic[] = "vehicle/motor";
 constexpr char kEventTopic[] = "vehicle/event";
 
 const char *eventName(VehicleEvent event)
@@ -153,37 +154,63 @@ esp_err_t TelemetryLink::publishMotorTelemetry(
     }
     // Network transmission runs in the MQTT task, not the motor control loop.
     // QoS 0 requires store=true to enqueue; the outbox has a bounded size.
-    return esp_mqtt_client_enqueue(client, kTelemetryTopic, payload, length, 0, 0, true) < 0
+    return esp_mqtt_client_enqueue(client, kMotorTopic, payload, length, 0, 0, true) < 0
                ? ESP_FAIL : ESP_OK;
 }
 
-esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record)
+esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
+                                           bool mpuAvailable,
+                                           bool gpsAvailable,
+                                           bool powerAvailable,
+                                           bool eepromAvailable)
 {
     const esp_mqtt_client_handle_t client = mqttClient_.load();
-    if (client == nullptr || !mqttStarted_.load()) {
+    if (client == nullptr || !mqttConnected_.load()) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    char payload[256] = {};
+    char payload[384] = {};
     char latitude[24] = {};
     char longitude[24] = {};
-    formatCoordinate(record.gps.latitudeDegrees, record.gps.valid,
+    char tilt[24] = {};
+    char voltage[24] = {};
+    char current[24] = {};
+    const bool gpsFixValid = gpsAvailable && record.gps.valid;
+    formatCoordinate(record.gps.latitudeDegrees, gpsFixValid,
                      latitude, sizeof(latitude));
-    formatCoordinate(record.gps.longitudeDegrees, record.gps.valid,
+    formatCoordinate(record.gps.longitudeDegrees, gpsFixValid,
                      longitude, sizeof(longitude));
+    if (mpuAvailable) {
+        std::snprintf(tilt, sizeof(tilt), "%.2f", static_cast<double>(record.tiltDegrees));
+    } else {
+        std::snprintf(tilt, sizeof(tilt), "null");
+    }
+    if (powerAvailable) {
+        std::snprintf(voltage, sizeof(voltage), "%.3f", static_cast<double>(record.busVoltageVolts));
+        std::snprintf(current, sizeof(current), "%.1f", static_cast<double>(record.currentMilliamps));
+    } else {
+        std::snprintf(voltage, sizeof(voltage), "null");
+        std::snprintf(current, sizeof(current), "null");
+    }
     const int payloadLength = std::snprintf(
         payload,
         sizeof(payload),
-        "{\"uptime_ms\":%lu,\"tilt_deg\":%.2f,\"throttle_percent\":%lu,"
-        "\"bus_voltage_v\":%.3f,\"current_ma\":%.1f,\"gps_valid\":%s,"
+        "{\"uptime_ms\":%lu,\"mpu_available\":%s,\"tilt_deg\":%s,"
+        "\"gps_available\":%s,\"gps_valid\":%s,\"power_available\":%s,"
+        "\"eeprom_available\":%s,\"throttle_percent\":%lu,"
+        "\"bus_voltage_v\":%s,\"current_ma\":%s,"
         "\"latitude_deg\":%s,\"longitude_deg\":%s,"
         "\"speed_mps\":%.2f,\"satellites\":%lu}",
         static_cast<unsigned long>(record.uptimeMilliseconds),
-        static_cast<double>(record.tiltDegrees),
+        mpuAvailable ? "true" : "false",
+        tilt,
+        gpsAvailable ? "true" : "false",
+        gpsFixValid ? "true" : "false",
+        powerAvailable ? "true" : "false",
+        eepromAvailable ? "true" : "false",
         static_cast<unsigned long>(record.throttlePercent),
-        static_cast<double>(record.busVoltageVolts),
-        static_cast<double>(record.currentMilliamps),
-        record.gps.valid ? "true" : "false",
+        voltage,
+        current,
         latitude,
         longitude,
         static_cast<double>(record.gps.speedMetersPerSecond),

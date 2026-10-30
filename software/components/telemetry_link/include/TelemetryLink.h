@@ -12,7 +12,11 @@ class TelemetryLink {
 public:
     // Empty URI starts Wi-Fi only. Call once; keep this object alive for callbacks.
     esp_err_t initialize(const char *brokerUri);
-    esp_err_t publishTelemetry(const TelemetryRecord &record);
+    esp_err_t publishTelemetry(const TelemetryRecord &record,
+                               bool mpuAvailable,
+                               bool gpsAvailable,
+                               bool powerAvailable,
+                               bool eepromAvailable);
     esp_err_t publishMotorTelemetry(uint32_t uptimeMs, const char *phase, int raw,
                                     uint32_t throttlePercent, float filteredPercent,
                                     uint32_t dutyPermille, bool relayOn);

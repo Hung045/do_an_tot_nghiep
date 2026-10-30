@@ -1,6 +1,7 @@
 # Web theo dõi ESP32
 
-Giao diện chỉ đọc dữ liệu thật từ `vehicle/telemetry`, không gửi lệnh điều
+Giao diện chỉ đọc dữ liệu thật từ `vehicle/motor`, `vehicle/telemetry` và
+`vehicle/event`; không gửi lệnh điều
 khiển. Laptop chạy Mosquitto và web server; laptop và điện thoại có thể cùng
 mở dashboard khi kết nối chung một mạng Wi-Fi/LAN.
 
