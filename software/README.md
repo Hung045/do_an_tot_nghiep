@@ -100,15 +100,16 @@ The local `sdkconfig` may contain the Wi-Fi password and must not be committed.
 TelemetryLink initializes NVS before Wi-Fi and reports failures without
 automatically erasing stored data. The current main uses CONFIG_DEMO_MQTT_BROKER_URI from menuconfig. An empty
 URI tests Wi-Fi only; a nonempty URI starts MQTT after obtaining an IP.
-While connected, main enqueues motor telemetry once per second on
+While connected, main publishes motor telemetry once per second on
 `vehicle/motor`, using the same snapshot as the Monitor log:
 `uptime_ms`, `phase`, `raw`, `throttle_pct`, `filtered_pct`, `pwm_pct`,
 and `relay_cmd` (boolean command, not physical contact feedback).
 System measurements and module availability are published on
 `vehicle/telemetry`; unavailable measurements use JSON `null`.
-Offline samples are skipped; network transmission runs in the MQTT task with
-a 4096-byte outbox limit. A sample queued just before disconnect may arrive
-after reconnect; use `uptime_ms` to identify its age. QoS 0 is not guaranteed delivery.
+Offline samples are skipped. The live motor and system streams use direct
+QoS 0 publishing so stale periodic samples do not fill the outbox. QoS 1
+events use a bounded 8192-byte outbox and may arrive after reconnect. Use
+`uptime_ms` to identify sample age. QoS 0 does not guarantee delivery.
 
 On the broker laptop, subscribe before turning the potentiometer:
 
