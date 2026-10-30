@@ -221,7 +221,16 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
 
     const int messageId = esp_mqtt_client_enqueue(
         client, kTelemetryTopic, payload, payloadLength, 0, 0, true);
-    return messageId < 0 ? ESP_FAIL : ESP_OK;
+    if (messageId == -2) {
+        ESP_LOGW(TAG, "System telemetry outbox full; payload=%d bytes", payloadLength);
+        return ESP_ERR_NO_MEM;
+    }
+    if (messageId < 0) {
+        ESP_LOGW(TAG, "System telemetry enqueue failed: result=%d payload=%d bytes",
+                 messageId, payloadLength);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 esp_err_t TelemetryLink::publishEvent(VehicleEvent event, const GpsFix &fix)
@@ -307,7 +316,9 @@ esp_err_t TelemetryLink::startMqttClient()
 
     esp_mqtt_client_config_t config = {};
     config.broker.address.uri = brokerUri_;
-    config.outbox.limit = 4096;
+    // Two telemetry streams are queued every second. Keep a finite limit so
+    // temporary network stalls do not consume unbounded RAM.
+    config.outbox.limit = 8192;
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&config);
     if (client == nullptr) {
         return ESP_ERR_NO_MEM;
