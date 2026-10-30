@@ -220,7 +220,7 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
     }
 
     const int messageId = esp_mqtt_client_enqueue(
-        client, kTelemetryTopic, payload, payloadLength, 0, 0, false);
+        client, kTelemetryTopic, payload, payloadLength, 0, 0, true);
     return messageId < 0 ? ESP_FAIL : ESP_OK;
 }
 
