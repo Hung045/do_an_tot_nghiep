@@ -200,7 +200,7 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
         "\"eeprom_available\":%s,\"throttle_percent\":%lu,"
         "\"bus_voltage_v\":%s,\"current_ma\":%s,"
         "\"latitude_deg\":%s,\"longitude_deg\":%s,"
-        "\"speed_mps\":%.2f,\"satellites\":%lu}",
+        "\"speed_mps\":%.2f,\"satellites\":%lu}\n",
         static_cast<unsigned long>(record.uptimeMilliseconds),
         mpuAvailable ? "true" : "false",
         tilt,

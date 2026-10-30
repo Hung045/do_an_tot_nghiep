@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 
 #include "BoardConfig.h"
@@ -332,6 +333,7 @@ void controlTask(void *)
                          esp_err_to_name(motorPublishErr),
                          esp_err_to_name(systemPublishErr));
             }
+            std::printf("\n");
 
             lastLog = now;
         }
