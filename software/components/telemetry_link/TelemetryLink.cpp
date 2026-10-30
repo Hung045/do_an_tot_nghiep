@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "nvs_flash.h"
 #include "sdkconfig.h"
 
 namespace {
@@ -41,9 +42,9 @@ void formatCoordinate(double coordinate, bool valid, char *output, size_t output
 
 esp_err_t TelemetryLink::initialize(const char *brokerUri)
 {
-    if (brokerUri == nullptr || brokerUri[0] == '\0' ||
+    if (brokerUri == nullptr ||
         CONFIG_DEMO_WIFI_SSID[0] == '\0') {
-        ESP_LOGE(TAG, "Set the Wi-Fi SSID and MQTT broker URI in menuconfig");
+        ESP_LOGE(TAG, "Set Wi-Fi SSID in menuconfig > Vehicle telemetry");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -53,7 +54,23 @@ esp_err_t TelemetryLink::initialize(const char *brokerUri)
     }
     std::memcpy(brokerUri_, brokerUri, brokerUriLength + 1);
 
-    esp_err_t err = esp_netif_init();
+    wifi_config_t wifiConfig = {};
+    const size_t ssidLength = std::strlen(CONFIG_DEMO_WIFI_SSID);
+    const size_t passwordLength = std::strlen(CONFIG_DEMO_WIFI_PASSWORD);
+    if (ssidLength > sizeof(wifiConfig.sta.ssid) ||
+        passwordLength >= sizeof(wifiConfig.sta.password)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    std::memcpy(wifiConfig.sta.ssid, CONFIG_DEMO_WIFI_SSID, ssidLength);
+    std::memcpy(wifiConfig.sta.password, CONFIG_DEMO_WIFI_PASSWORD, passwordLength);
+
+    esp_err_t err = nvs_flash_init();
+    if (err != ESP_OK) {
+        // Do not erase application NVS automatically on initialization failure.
+        ESP_LOGE(TAG, "NVS initialization failed: %s; Wi-Fi not started", esp_err_to_name(err));
+        return err;
+    }
+    err = esp_netif_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
     }
@@ -93,16 +110,6 @@ esp_err_t TelemetryLink::initialize(const char *brokerUri)
         return err;
     }
 
-    wifi_config_t wifiConfig = {};
-    const size_t ssidLength = std::strlen(CONFIG_DEMO_WIFI_SSID);
-    const size_t passwordLength = std::strlen(CONFIG_DEMO_WIFI_PASSWORD);
-    if (ssidLength > sizeof(wifiConfig.sta.ssid) ||
-        passwordLength >= sizeof(wifiConfig.sta.password)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    std::memcpy(wifiConfig.sta.ssid, CONFIG_DEMO_WIFI_SSID, ssidLength);
-    std::memcpy(wifiConfig.sta.password, CONFIG_DEMO_WIFI_PASSWORD, passwordLength);
-
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) {
         return err;
@@ -115,13 +122,39 @@ esp_err_t TelemetryLink::initialize(const char *brokerUri)
     if (err != ESP_OK) {
         return err;
     }
-    err = esp_wifi_connect();
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    ESP_LOGI(TAG, "Wi-Fi connection started; MQTT will start after an IP address is obtained");
+    ESP_LOGI(TAG, "Wi-Fi started asynchronously; %s",
+             brokerUri_[0] == '\0' ? "Wi-Fi-only test (MQTT disabled)" : "MQTT starts after obtaining IP");
     return ESP_OK;
+}
+
+esp_err_t TelemetryLink::publishMotorTelemetry(
+    uint32_t uptimeMs, const char *phase, int raw, uint32_t throttlePercent,
+    float filteredPercent, uint32_t dutyPermille, bool relayOn)
+{
+    const esp_mqtt_client_handle_t client = mqttClient_.load();
+    if (client == nullptr || !mqttConnected_.load()) {
+        return ESP_ERR_INVALID_STATE; // Skip offline samples instead of accumulating them.
+    }
+    // Phase is supplied by the application's fixed state names.
+    if (phase == nullptr || throttlePercent > 100U || dutyPermille > 1000U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char payload[256] = {};
+    const int length = std::snprintf(
+        payload, sizeof(payload),
+        "{\"uptime_ms\":%lu,\"phase\":\"%s\",\"raw\":%d,\"throttle_pct\":%lu,"
+        "\"filtered_pct\":%.1f,\"pwm_pct\":%.1f,\"relay_cmd\":%s}",
+        static_cast<unsigned long>(uptimeMs), phase, raw,
+        static_cast<unsigned long>(throttlePercent),
+        static_cast<double>(filteredPercent), static_cast<double>(dutyPermille / 10.0f),
+        relayOn ? "true" : "false");
+    if (length < 0 || static_cast<size_t>(length) >= sizeof(payload)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    // Network transmission runs in the MQTT task, not the motor control loop.
+    // QoS 0 requires store=true to enqueue; the outbox has a bounded size.
+    return esp_mqtt_client_enqueue(client, kTelemetryTopic, payload, length, 0, 0, true) < 0
+               ? ESP_FAIL : ESP_OK;
 }
 
 esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record)
@@ -206,8 +239,18 @@ void TelemetryLink::wifiEventHandler(
     void *eventData)
 {
     auto *self = static_cast<TelemetryLink *>(argument);
+    if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_START) {
+        const esp_err_t err = esp_wifi_connect();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Wi-Fi connect request failed: %s", esp_err_to_name(err));
+        }
+        return;
+    }
     if (eventBase == WIFI_EVENT && eventId == WIFI_EVENT_STA_DISCONNECTED) {
-        ESP_LOGW(TAG, "Wi-Fi disconnected; reconnecting");
+        self->mqttConnected_.store(false);
+        const auto *event = static_cast<const wifi_event_sta_disconnected_t *>(eventData);
+        ESP_LOGW(TAG, "Wi-Fi disconnected, reason=%u; reconnecting",
+                 event == nullptr ? 0U : static_cast<unsigned>(event->reason));
         const esp_err_t err = esp_wifi_connect();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Wi-Fi reconnect request failed: %s", esp_err_to_name(err));
@@ -218,6 +261,10 @@ void TelemetryLink::wifiEventHandler(
     if (eventBase == IP_EVENT && eventId == IP_EVENT_STA_GOT_IP) {
         const auto *event = static_cast<const ip_event_got_ip_t *>(eventData);
         ESP_LOGI(TAG, "Wi-Fi connected, IP=" IPSTR, IP2STR(&event->ip_info.ip));
+        if (self->brokerUri_[0] == '\0') {
+            ESP_LOGI(TAG, "STEP 1 PASS: IP obtained; MQTT remains disabled");
+            return;
+        }
         const esp_err_t err = self->startMqttClient();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "MQTT client start failed: %s", esp_err_to_name(err));
@@ -233,6 +280,7 @@ esp_err_t TelemetryLink::startMqttClient()
 
     esp_mqtt_client_config_t config = {};
     config.broker.address.uri = brokerUri_;
+    config.outbox.limit = 4096;
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&config);
     if (client == nullptr) {
         return ESP_ERR_NO_MEM;
@@ -264,12 +312,14 @@ void TelemetryLink::mqttEventHandler(
     int32_t eventId,
     void *eventData)
 {
-    (void)argument;
+    auto *self = static_cast<TelemetryLink *>(argument);
     (void)eventBase;
     (void)eventData;
     if (eventId == MQTT_EVENT_CONNECTED) {
+        self->mqttConnected_.store(true);
         ESP_LOGI(TAG, "Connected to MQTT broker");
     } else if (eventId == MQTT_EVENT_DISCONNECTED) {
+        self->mqttConnected_.store(false);
         ESP_LOGW(TAG, "Disconnected from MQTT broker; client will reconnect");
     } else if (eventId == MQTT_EVENT_ERROR) {
         ESP_LOGE(TAG, "MQTT transport error");

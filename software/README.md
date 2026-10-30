@@ -36,7 +36,8 @@ PWM frequency is temporarily 1 kHz (previously 20 kHz) to diagnose the
 LR7843 output appearing near supply voltage at low duty. Compare settled
 10%, 20%, and 30% duty readings and motor response; a DC meter does not
 verify waveform quality. This shared frequency also applies to the headlight
-driver when it is initialized. The current main only initializes the motor.
+driver when it is initialized. The current main initializes the motor and
+starts Wi-Fi and the configured MQTT broker connection through TelemetryLink.
 
 `main/main.cpp` starts with relay OFF and PWM zero. Hold throttle at 0-2%
 for one continuous second to arm, then raise it to at least 5% to start.
@@ -64,7 +65,7 @@ ADC faults bypass this debounce. Confirmed stops log immediately.
 Every 1 second, it logs throttle raw ADC and percent from the same sample,
 alongside the relay and PWM commands and LOCKED/READY/RELAY_WAIT/RUNNING state.
 Command values are not physical feedback from the relay contacts or PWM pin.
-MPU6050, GPS, EEPROM, INA226, headlight, and MQTT are not initialized.
+MPU6050, GPS, EEPROM, INA226, and headlight are not initialized.
 
 Initially verify all commands with motor power disconnected. Full throttle
 now commands 100% duty; there is no motor current limit. Fit an appropriately rated flyback diode and
@@ -93,14 +94,47 @@ When called by the application, `TelemetryLink` can connect to Wi-Fi and publish
 over MQTT. Configure its Wi-Fi SSID, password, and broker URI with
 **ESP-IDF: SDK Configuration editor (menuconfig)** under **Vehicle telemetry**.
 The local `sdkconfig` may contain the Wi-Fi password and must not be committed.
-Initialize NVS before starting Wi-Fi when integrating this component; the
-current motor-only main does not initialize NVS or telemetry.
+TelemetryLink initializes NVS before Wi-Fi and reports failures without
+automatically erasing stored data. The current main uses CONFIG_DEMO_MQTT_BROKER_URI from menuconfig. An empty
+URI tests Wi-Fi only; a nonempty URI starts MQTT after obtaining an IP.
+While connected, main enqueues motor telemetry once per second on
+`vehicle/telemetry`, using the same snapshot as the Monitor log:
+`uptime_ms`, `phase`, `raw`, `throttle_pct`, `filtered_pct`, `pwm_pct`,
+and `relay_cmd` (boolean command, not physical contact feedback).
+No uninitialized sensor readings or events are published by this motor test.
+Offline samples are skipped; network transmission runs in the MQTT task with
+a 4096-byte outbox limit. A sample queued just before disconnect may arrive
+after reconnect; use `uptime_ms` to identify its age. QoS 0 is not guaranteed delivery.
+
+On the broker laptop, subscribe before turning the potentiometer:
+
+```powershell
+& "<Mosquitto-install-folder>\mosquitto_sub.exe" -h localhost -p 1883 -t "vehicle/telemetry" -v
+```
+
+Compare received values with Monitor, then disconnect/reconnect Wi-Fi and
+verify the motor loop continues and telemetry resumes. Build and flash the
+updated firmware before testing; connection alone does not verify publishing.
+Connection and reconnection run through events; the motor loop does not wait
+for an access point or IP. An empty SSID skips network startup with an error
+log and leaves the motor test running offline.
 Telemetry is published as JSON to `vehicle/telemetry` (QoS 0); crash events are
 published to `vehicle/event` (QoS 1). Dashboard and email alerts are not
 implemented. Shared pin defaults and device settings are in
 `components/board_config/include/BoardConfig.h`.
 
 ## Component hand-off
+
+For the connection test, enter a 2.4 GHz network's SSID and password in
+menuconfig > Vehicle telemetry, save, build, flash, and monitor with motor
+power disconnected. Success logs `Wi-Fi connected, IP=...` and
+`STEP 1 PASS: IP obtained; MQTT remains disabled`. Motor logs continue once
+per second. Turn the access point off/on to check disconnect/reconnect;
+disconnect logs include a reason code. To test MQTT, set MQTT broker URI to
+`mqtt://<broker-LAN-IP>:1883` for a plain local broker, then rebuild and flash.
+Expect `Connected to MQTT broker` instead of the Wi-Fi-only STEP 1 message.
+The broker must be reachable from the ESP32 network and allow this client.
+Do not publish sdkconfig or passwords.
 
 | Component | Start in | Main implementation work |
 | --- | --- | --- |

@@ -1,5 +1,7 @@
 #include "MotorController.h"
+#include "TelemetryLink.h"
 #include "BoardConfig.h"
+#include "sdkconfig.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -44,6 +46,15 @@ extern "C" void app_main(void)
     requireOk(motor.initialize(), "initialize");
     requireOk(motor.setMotorDutyPercent(0), "initial PWM zero");
     requireOk(motor.setMotorPowerEnabled(false), "initial relay OFF");
+
+    // Connect to the configured broker after Wi-Fi obtains an IP.
+    // Static lifetime keeps event-handler callbacks valid.
+    static TelemetryLink telemetry;
+    const esp_err_t wifiErr = telemetry.initialize(CONFIG_DEMO_MQTT_BROKER_URI);
+    if (wifiErr != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi setup failed: %s; motor test continues offline",
+                 esp_err_to_name(wifiErr));
+    }
 
     enum class State { Locked, Ready, RelaySettling, Running };
     State state = State::Locked;
@@ -135,6 +146,12 @@ extern "C" void app_main(void)
                      relayOn ? "ON" : "OFF", static_cast<double>(filteredThrottle / 10.0f),
                      static_cast<double>(duty / 10.0f));
             lastLog = now;
+            const esp_err_t publishErr = telemetry.publishMotorTelemetry(
+                static_cast<uint32_t>(now * portTICK_PERIOD_MS), phase, raw,
+                throttle, filteredThrottle / 10.0f, duty, relayOn);
+            if (publishErr != ESP_OK && publishErr != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "MQTT sample skipped: %s", esp_err_to_name(publishErr));
+            }
         }
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(20));
     }
