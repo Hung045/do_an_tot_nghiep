@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 
 #include "BoardConfig.h"
@@ -9,9 +10,11 @@
 #include "MotorController.h"
 #include "PowerMonitor.h"
 #include "ProjectTypes.h"
+#include "TelemetryLink.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 
 // Dự phòng nếu BoardConfig.h chưa định nghĩa ngưỡng ADC của tay ga
 #ifndef DEMO_THROTTLE_ADC_MIN
@@ -37,6 +40,7 @@ GpsTracker gpsTracker;
 MotorController motor;
 HeadlightController headlight;
 PowerMonitor powerMonitor;
+TelemetryLink telemetry;
 
 // Thuật toán tăng/giảm tốc mềm (Ramp Duty) tính theo phần nghìn (0..1000) của bạn Hùng
 uint32_t rampDuty(uint32_t current, uint32_t target)
@@ -97,6 +101,12 @@ void controlTask(void *)
     requireOk(motor.setMotorDutyPercent(0), "initial PWM zero");
     requireOk(motor.setMotorPowerEnabled(false), "initial relay OFF");
 
+    const esp_err_t networkErr = telemetry.initialize(CONFIG_DEMO_MQTT_BROKER_URI);
+    if (networkErr != ESP_OK) {
+        ESP_LOGW(TAG, "Network unavailable: %s; local control continues",
+                 esp_err_to_name(networkErr));
+    }
+
     esp_err_t err = headlight.initialize();
     const bool headlightReady = (err == ESP_OK);
     if (!headlightReady) {
@@ -105,8 +115,14 @@ void controlTask(void *)
 
     // 2. Khởi tạo 3 Module Cảm biến & Hộp đen của bạn (+ INA226)
     err = crashDetector.initialize();
-    if (err != ESP_OK) {
+    const bool crashDetectorReady = (err == ESP_OK) && crashDetector.isAvailable();
+    if (!crashDetectorReady) {
         ESP_LOGW(TAG, "MPU6050 unavailable: %s", esp_err_to_name(err));
+#if CONFIG_DEMO_REQUIRE_MPU6050
+        triggerSafetyFault("MPU6050 required but unavailable", ESP_ERR_NOT_FOUND);
+#else
+        ESP_LOGW(TAG, "BENCH TEST: motor is allowed without MPU6050");
+#endif
     }
 
     err = powerMonitor.initialize();
@@ -149,11 +165,15 @@ void controlTask(void *)
         bool crashDetected = false;
 
         // A. Kiểm tra góc nghiêng & phát hiện ngã xe (CrashDetector)
-        err = crashDetector.update(&tiltDegrees, &crashDetected);
-        if (err != ESP_OK) {
-            triggerSafetyFault("MPU6050 read failed", err);
-        } else if (crashDetected) {
-            triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
+        if (crashDetectorReady) {
+            err = crashDetector.update(&tiltDegrees, &crashDetected);
+            if (err != ESP_OK) {
+                triggerSafetyFault("MPU6050 read failed", err);
+            } else if (crashDetected && state != State::Fault) {
+                triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
+                const GpsFix noFix = {};
+                telemetry.publishEvent(VehicleEvent::CrashDetected, noFix);
+            }
         }
 
         // B. Đọc tay ga & Điều khiển Động cơ theo máy trạng thái của bạn Hùng
@@ -300,6 +320,20 @@ void controlTask(void *)
                          static_cast<double>(record.currentMilliamps),
                          static_cast<unsigned long>(record.gps.satellitesInView));
             }
+
+            const esp_err_t motorPublishErr = telemetry.publishMotorTelemetry(
+                record.uptimeMilliseconds, phase, raw, throttle,
+                filteredThrottle / 10.0F, duty, relayOn);
+            const esp_err_t systemPublishErr = telemetry.publishTelemetry(
+                record, crashDetectorReady, gpsTrackerReady,
+                powerMonitorReady, dataLoggerReady);
+            if ((motorPublishErr != ESP_OK && motorPublishErr != ESP_ERR_INVALID_STATE) ||
+                (systemPublishErr != ESP_OK && systemPublishErr != ESP_ERR_INVALID_STATE)) {
+                ESP_LOGW(TAG, "MQTT publish failed: motor=%s system=%s",
+                         esp_err_to_name(motorPublishErr),
+                         esp_err_to_name(systemPublishErr));
+            }
+            std::printf("\n");
 
             lastLog = now;
         }

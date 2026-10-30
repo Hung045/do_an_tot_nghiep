@@ -78,7 +78,7 @@ bool verifyChecksum(char *sentence)
     return checksum == static_cast<uint8_t>(expected);
 }
 
-} 
+}
 
 esp_err_t GpsTracker::initialize()
 {
@@ -105,11 +105,11 @@ esp_err_t GpsTracker::initialize()
     if (err != ESP_OK) {
         return err;
     }
-    
+
     if (!uart_is_driver_installed(uartPort)) {
         err = uart_driver_install(
             uartPort,
-            kUartBufferSize * 2U, 
+            kUartBufferSize * 2U,
             0,
             0,
             nullptr,
@@ -188,7 +188,7 @@ void GpsTracker::consumeByte(uint8_t byte)
     }
 
     if (byte == '\n' || byte == '\r') {
-        if (lineLength_ > 6) { 
+        if (lineLength_ > 6) {
             line_[lineLength_] = '\0';
             parseLine();
         }
@@ -199,7 +199,7 @@ void GpsTracker::consumeByte(uint8_t byte)
     if (lineLength_ + 1 < sizeof(line_)) {
         line_[lineLength_++] = static_cast<char>(byte);
     } else {
-        lineLength_ = 0; 
+        lineLength_ = 0;
     }
 }
 
@@ -226,7 +226,7 @@ void GpsTracker::parseLine()
         if (fieldCount > 7) {
             latestFix_.satellitesInView =
                 static_cast<uint32_t>(std::strtoul(fields[7], nullptr, 10));
-            
+
             const uint32_t fixQuality = static_cast<uint32_t>(std::strtoul(fields[6], nullptr, 10));
             if (fixQuality > 0U) {
                 double latitude = 0.0;
@@ -247,7 +247,7 @@ void GpsTracker::parseLine()
     if ((std::strcmp(fields[0], "GPRMC") == 0 ||
          std::strcmp(fields[0], "GNRMC") == 0) &&
         fieldCount >= 9) {
-        
+
         if (fields[2][0] != 'A') {
             hasFix_ = false;
             latestFix_.valid = false;

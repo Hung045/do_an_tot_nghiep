@@ -73,12 +73,11 @@
 #define DEMO_BATTERY_NOMINAL_MILLIVOLTS  11100
 #define DEMO_BATTERY_FULL_MILLIVOLTS     12600
 
-// Module Relay 1 kênh 5V có cách ly quang (Opto):
-// Đặt là 1 nếu kích mức Cao (Active-High), đổi thành 0 nếu kích mức Thấp (Active-Low).
-#define DEMO_RELAY_ACTIVE_LEVEL          1
+// Relay module is active-low; verify against the actual module before use.
+#define DEMO_RELAY_ACTIVE_LEVEL          0
 
-// Tần số PWM 20kHz (vượt ngưỡng nghe của tai người, giúp MOSFET LR7843 và động cơ không kêu rít)
-#define DEMO_PWM_FREQUENCY_HZ            20000
+// Diagnostic frequency for the LR7843 module; confirm output on hardware.
+#define DEMO_PWM_FREQUENCY_HZ            1000
 #define DEMO_PWM_RESOLUTION_BITS         10
 
 // ============================================================================
@@ -173,9 +172,3 @@ private:
 
 } // namespace BoardI2c
 #endif
-// Set to 0 if the relay module is active-low.
-#define DEMO_RELAY_ACTIVE_LEVEL 0
-
-// Diagnostic frequency for the LR7843 module; confirm output on hardware.
-#define DEMO_PWM_FREQUENCY_HZ 1000
-#define DEMO_PWM_RESOLUTION_BITS 10

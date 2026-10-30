@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <title>Giám sát xe điện · ESP32</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="https://unpkg.com/mqtt@5.10.4/dist/mqtt.min.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <main class="dashboard">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Giám sát xe điện ESP32">
+        <span class="brand-mark" aria-hidden="true">E</span>
+        <span><span class="brand-name">E-MOTION</span><span class="brand-caption">HỆ THỐNG GIÁM SÁT</span></span>
+      </a>
+      <div id="connection" class="connection-badge is-connecting" role="status" aria-live="polite">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>Đang tải thư viện MQTT…</span>
+      </div>
+    </header>
+
+    <section class="page-heading" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow">ESP32 <span aria-hidden="true">/</span> TELEMETRY</p>
+        <h1 id="page-title">Tổng quan xe</h1>
+        <p class="subtitle">Theo dõi dữ liệu động cơ theo thời gian thực.</p>
+      </div>
+      <div class="freshness-card" aria-label="Tình trạng dữ liệu">
+        <span class="freshness-label">DỮ LIỆU</span>
+        <strong id="freshness" class="freshness-value" role="status">Chưa nhận dữ liệu</strong>
+      </div>
+    </section>
+
+    <section id="alert-panel" class="alert-panel alert-neutral" aria-live="polite" aria-atomic="true">
+      <span class="alert-icon" aria-hidden="true">i</span>
+      <p id="alert-message">Đang chờ telemetry từ ESP32.</p>
+    </section>
+
+    <section class="metrics-grid" aria-label="Thông số động cơ">
+      <article class="metric-card metric-primary">
+        <div class="metric-heading"><h2>Tay ga</h2><span class="metric-symbol" aria-hidden="true">%</span></div>
+        <strong id="throttle" class="metric-value">—</strong>
+        <meter id="throttle-meter" min="0" max="100" value="0" aria-label="Phần trăm tay ga"></meter>
+        <span class="metric-footnote">Tín hiệu biến trở</span>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><h2>Lệnh PWM</h2><span class="metric-symbol" aria-hidden="true">%</span></div>
+        <strong id="pwm" class="metric-value">—</strong>
+        <meter id="pwm-meter" min="0" max="100" value="0" aria-label="Phần trăm PWM"></meter>
+        <span class="metric-footnote">Duty điều khiển, không phải RPM</span>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><h2>Trạng thái</h2><span id="phase-indicator" class="phase-indicator">CHỜ</span></div>
+        <strong id="phase" class="metric-value phase-value">—</strong>
+        <span class="metric-footnote">Trạng thái bộ điều khiển</span>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><h2>Lệnh relay</h2><span class="metric-symbol" aria-hidden="true">I/O</span></div>
+        <strong id="relay" class="metric-value">—</strong>
+        <span class="metric-footnote">Không phải phản hồi tiếp điểm</span>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><h2>Ga sau lọc</h2><span class="metric-symbol" aria-hidden="true">EMA</span></div>
+        <strong id="filtered" class="metric-value">—</strong>
+        <span class="metric-footnote">Giá trị đã làm mượt</span>
+      </article>
+      <article class="metric-card">
+        <div class="metric-heading"><h2>ADC biến trở</h2><span class="metric-symbol" aria-hidden="true">RAW</span></div>
+        <strong id="raw" class="metric-value">—</strong>
+        <span class="metric-footnote">Giá trị đọc thô</span>
+      </article>
+    </section>
+
+    <section class="panel chart-panel" aria-labelledby="chart-title">
+      <div class="panel-heading">
+        <div><p class="eyebrow">LIVE DATA</p><h2 id="chart-title">Diễn biến ga &amp; PWM</h2></div>
+        <span class="chart-window">60 mẫu gần nhất</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="telemetry-chart" viewBox="0 0 720 240" role="img"
+             aria-label="Biểu đồ phần trăm tay ga và PWM trong 60 mẫu telemetry gần nhất">
+          <line class="chart-grid" x1="44" y1="20" x2="710" y2="20"></line>
+          <line class="chart-grid" x1="44" y1="65" x2="710" y2="65"></line>
+          <line class="chart-grid" x1="44" y1="110" x2="710" y2="110"></line>
+          <line class="chart-grid" x1="44" y1="155" x2="710" y2="155"></line>
+          <line class="chart-grid" x1="44" y1="200" x2="710" y2="200"></line>
+          <text class="chart-axis" x="5" y="24">100</text>
+          <text class="chart-axis" x="14" y="69">75</text>
+          <text class="chart-axis" x="14" y="114">50</text>
+          <text class="chart-axis" x="14" y="159">25</text>
+          <text class="chart-axis" x="24" y="204">0</text>
+          <polyline id="throttle-line" class="chart-line throttle-line" points=""></polyline>
+          <polyline id="pwm-line" class="chart-line pwm-line" points=""></polyline>
+        </svg>
+      </div>
+      <div class="chart-footer">
+        <div class="chart-legend">
+          <span><i class="legend-dot throttle-dot"></i>Tay ga</span>
+          <span><i class="legend-dot pwm-dot"></i>PWM</span>
+        </div>
+        <span id="sample-count" class="sample-count">Chưa có mẫu</span>
+      </div>
+    </section>
+
+    <section class="bottom-grid">
+      <article class="panel system-panel">
+        <div class="panel-heading"><div><p class="eyebrow">DEVICE</p><h2>Thiết bị</h2></div></div>
+        <dl class="device-list">
+          <div><dt>Thời gian hoạt động</dt><dd id="uptime">—</dd></div>
+          <div><dt>Broker WebSocket</dt><dd id="broker-address">—</dd></div>
+          <div><dt>Topic</dt><dd>vehicle/#</dd></div>
+          <div><dt>MPU6050</dt><dd id="mpu-status">Chưa có dữ liệu</dd></div>
+          <div><dt>Góc nghiêng</dt><dd id="tilt">—</dd></div>
+          <div><dt>GPS</dt><dd id="gps-status">Chưa có dữ liệu</dd></div>
+          <div><dt>Vị trí GPS</dt><dd id="gps-fix">—</dd></div>
+          <div><dt>INA226</dt><dd id="power-status">Chưa có dữ liệu</dd></div>
+          <div><dt>Điện áp / dòng</dt><dd id="power-reading">—</dd></div>
+          <div><dt>EEPROM</dt><dd id="eeprom-status">Chưa có dữ liệu</dd></div>
+        </dl>
+      </article>
+      <details class="panel payload-panel">
+        <summary><span><span class="eyebrow">DEBUG</span><strong>Bản tin MQTT</strong></span><span class="details-chevron" aria-hidden="true">⌄</span></summary>
+        <pre id="payload">Chưa có bản tin</pre>
+      </details>
+    </section>
+
+    <footer>
+      <span>Dashboard chỉ giám sát, không gửi lệnh điều khiển.</span>
+      <span>Relay và PWM là lệnh phần mềm, không phải phản hồi phần cứng.</span>
+    </footer>
+  </main>
+</body>
+</html>

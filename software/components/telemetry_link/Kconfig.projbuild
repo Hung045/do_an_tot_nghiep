@@ -19,4 +19,12 @@ config DEMO_MQTT_BROKER_URI
         MQTT broker URI, for example mqtt://192.168.1.10:1883. Prefer a
         private broker because telemetry can include GPS coordinates.
 
+config DEMO_REQUIRE_MPU6050
+    bool "Require MPU6050 before enabling motor"
+    default y
+    help
+        Keep enabled for the integrated system. If MPU6050 is missing,
+        motor PWM and relay remain locked off while telemetry still runs.
+        Disable only for a clearly identified motor bench test.
+
 endmenu

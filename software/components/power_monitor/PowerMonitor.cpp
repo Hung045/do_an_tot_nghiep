@@ -19,6 +19,10 @@ constexpr float kMaximumShuntVoltageVolts = 0.08192F;
 
 esp_err_t writeRegister(uint8_t address, uint16_t value)
 {
+    BoardI2c::LockGuard lock(pdMS_TO_TICKS(100));
+    if (!lock.isLocked()) {
+        return ESP_ERR_TIMEOUT;
+    }
     const uint8_t data[] = {
         address,
         static_cast<uint8_t>(value >> 8),
@@ -38,6 +42,10 @@ esp_err_t readRegister(uint8_t address, uint16_t *value)
         return ESP_ERR_INVALID_ARG;
     }
 
+    BoardI2c::LockGuard lock(pdMS_TO_TICKS(100));
+    if (!lock.isLocked()) {
+        return ESP_ERR_TIMEOUT;
+    }
     uint8_t data[2] = {};
     esp_err_t err = i2c_master_write_read_device(
         I2C_NUM_0,
@@ -59,6 +67,9 @@ esp_err_t readRegister(uint8_t address, uint16_t *value)
 
 esp_err_t PowerMonitor::initialize()
 {
+    if (BoardI2c::getMutex() == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
     constexpr float shuntResistanceOhms =
         static_cast<float>(DEMO_INA226_SHUNT_MICRO_OHMS) / 1000000.0F;
     constexpr float maximumCurrentAmps =

@@ -10,8 +10,16 @@
 
 class TelemetryLink {
 public:
+    // Empty URI starts Wi-Fi only. Call once; keep this object alive for callbacks.
     esp_err_t initialize(const char *brokerUri);
-    esp_err_t publishTelemetry(const TelemetryRecord &record);
+    esp_err_t publishTelemetry(const TelemetryRecord &record,
+                               bool mpuAvailable,
+                               bool gpsAvailable,
+                               bool powerAvailable,
+                               bool eepromAvailable);
+    esp_err_t publishMotorTelemetry(uint32_t uptimeMs, const char *phase, int raw,
+                                    uint32_t throttlePercent, float filteredPercent,
+                                    uint32_t dutyPermille, bool relayOn);
     esp_err_t publishEvent(VehicleEvent event, const GpsFix &fix);
 
 private:
@@ -30,4 +38,5 @@ private:
     char brokerUri_[128] = {};
     std::atomic<esp_mqtt_client_handle_t> mqttClient_{nullptr};
     std::atomic<bool> mqttStarted_{false};
+    std::atomic<bool> mqttConnected_{false};
 };
