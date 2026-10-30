@@ -152,9 +152,9 @@ esp_err_t TelemetryLink::publishMotorTelemetry(
     if (length < 0 || static_cast<size_t>(length) >= sizeof(payload)) {
         return ESP_ERR_INVALID_SIZE;
     }
-    // Network transmission runs in the MQTT task, not the motor control loop.
-    // QoS 0 requires store=true to enqueue; the outbox has a bounded size.
-    return esp_mqtt_client_enqueue(client, kMotorTopic, payload, length, 0, 0, true) < 0
+    // This is a live QoS 0 sample. Send it now instead of storing old samples
+    // in the outbox when the producer briefly runs faster than the MQTT task.
+    return esp_mqtt_client_publish(client, kMotorTopic, payload, length, 0, 0) < 0
                ? ESP_FAIL : ESP_OK;
 }
 
@@ -219,14 +219,13 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
         return ESP_ERR_INVALID_SIZE;
     }
 
-    const int messageId = esp_mqtt_client_enqueue(
-        client, kTelemetryTopic, payload, payloadLength, 0, 0, true);
-    if (messageId == -2) {
-        ESP_LOGW(TAG, "System telemetry outbox full; payload=%d bytes", payloadLength);
-        return ESP_ERR_NO_MEM;
-    }
+    // Only the newest live telemetry sample matters. Publishing QoS 0 directly
+    // prevents periodic samples from filling the outbox; QoS 1 events below
+    // still use the outbox so they can survive a temporary network stall.
+    const int messageId = esp_mqtt_client_publish(
+        client, kTelemetryTopic, payload, payloadLength, 0, 0);
     if (messageId < 0) {
-        ESP_LOGW(TAG, "System telemetry enqueue failed: result=%d payload=%d bytes",
+        ESP_LOGW(TAG, "System telemetry publish failed: result=%d payload=%d bytes",
                  messageId, payloadLength);
         return ESP_FAIL;
     }
