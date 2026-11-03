@@ -3,6 +3,7 @@
 const MAX_SAMPLES = 60;
 const STALE_AFTER_SECONDS = 5;
 const VALID_PHASES = ["LOCKED", "READY", "RELAY_WAIT", "RUNNING", "FAULT_LOCKED"];
+const VALID_EVENTS = ["crash_detected", "power_warning", "sensor_fault"];
 const samples = [];
 const brokerHost = location.hostname || "127.0.0.1";
 const brokerUrl = `ws://${brokerHost}:9001`;
@@ -13,6 +14,7 @@ const show = (id, value) => {
 
 let lastReceived = null;
 let lastUptime = null;
+let lastEvent = null;
 
 function setConnection(message, state) {
   const badge = document.getElementById("connection");
@@ -89,6 +91,14 @@ function checkCommandState(data) {
     return;
   }
 
+  if (lastEvent?.event === "crash_detected" && data.phase === "FAULT_LOCKED") {
+    const location = lastEvent.gps_valid
+      ? ` tại ${lastEvent.latitude_deg.toFixed(6)}, ${lastEvent.longitude_deg.toFixed(6)}`
+      : "; chưa có vị trí GPS hợp lệ";
+    setAlert(`Phát hiện xe ngã${location}. Hệ thống đã khóa an toàn.`, "danger");
+    return;
+  }
+
   if (data.phase === "FAULT_LOCKED") {
     setAlert("Hệ thống đang khóa an toàn. Xem Monitor để biết nguyên nhân và reset sau khi đã xử lý lỗi.", "danger");
     return;
@@ -120,6 +130,10 @@ function formatUptime(milliseconds) {
 function renderTelemetry(data) {
   if (lastUptime !== null && data.uptime_ms < lastUptime) {
     samples.length = 0;
+    lastEvent = null;
+    show("event-status", "Chưa có sự kiện sau khi khởi động lại");
+    show("event-location", "—");
+    show("event-time", "—");
   }
   lastUptime = data.uptime_ms;
 
@@ -165,6 +179,42 @@ function renderSystemTelemetry(data) {
   show("power-reading", data.power_available && data.bus_voltage_v !== null && data.current_ma !== null
     ? `${data.bus_voltage_v.toFixed(2)} V / ${data.current_ma.toFixed(0)} mA` : "—");
   show("eeprom-status", data.eeprom_available ? "Sẵn sàng" : "Không phát hiện");
+}
+
+function validateEvent(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  if (!VALID_EVENTS.includes(data.event) || typeof data.gps_valid !== "boolean") return false;
+  if (!data.gps_valid) {
+    return data.latitude_deg === null && data.longitude_deg === null;
+  }
+  return Number.isFinite(data.latitude_deg) && data.latitude_deg >= -90 && data.latitude_deg <= 90 &&
+    Number.isFinite(data.longitude_deg) && data.longitude_deg >= -180 && data.longitude_deg <= 180;
+}
+
+function renderEvent(data) {
+  const labels = {
+    crash_detected: "Phát hiện xe ngã",
+    power_warning: "Cảnh báo nguồn",
+    sensor_fault: "Lỗi cảm biến"
+  };
+  lastEvent = data;
+  show("event-status", labels[data.event]);
+  show("event-location", data.gps_valid
+    ? `${data.latitude_deg.toFixed(6)}, ${data.longitude_deg.toFixed(6)}`
+    : "Chưa có vị trí GPS hợp lệ");
+  show("event-time", new Intl.DateTimeFormat("vi-VN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).format(new Date()));
+  show("payload", JSON.stringify(data, null, 2));
+
+  const location = data.gps_valid
+    ? ` tại ${data.latitude_deg.toFixed(6)}, ${data.longitude_deg.toFixed(6)}`
+    : "; chưa có vị trí GPS hợp lệ";
+  const level = data.event === "crash_detected" || data.event === "sensor_fault"
+    ? "danger" : "warning";
+  setAlert(`${labels[data.event]}${location}.`, level);
 }
 
 updateChart();
@@ -222,6 +272,12 @@ if (typeof mqtt === "undefined") {
         return;
       }
       renderSystemTelemetry(data);
+    } else if (topic === "vehicle/event") {
+      if (!validateEvent(data)) {
+        setAlert("Đã bỏ qua sự kiện sai định dạng.", "danger");
+        return;
+      }
+      renderEvent(data);
     }
   });
 }
