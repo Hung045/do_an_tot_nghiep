@@ -41,6 +41,16 @@ mở dashboard khi kết nối chung một mạng Wi-Fi/LAN.
    thay thế bảo vệ phần cứng hay xác nhận trạng thái thực tế của relay.
    Ctrl+C dừng HTTP server.
 
+Khi chưa có MPU6050, có thể kiểm tra riêng giao diện sự kiện bằng cách gửi một
+bản tin thủ công từ PowerShell:
+
+```powershell
+& "<Mosquitto-install-folder>\mosquitto_pub.exe" -h localhost -p 1883 -t "vehicle/event" -m '{"event":"crash_detected","gps_valid":false,"latitude_deg":null,"longitude_deg":null}'
+```
+
+Dashboard phải hiển thị "Phát hiện xe ngã", thời điểm nhận và thông báo chưa
+có vị trí GPS hợp lệ.
+
 MQTT.js 5.10.4 được tải từ CDN unpkg; laptop cần Internet khi tải trang.
 Nếu không tải được thư viện, trang hiển thị thông báo lỗi. Cổng 8000 phục
 vụ HTML, cổng 1883 nhận MQTT từ ESP32, cổng 9001 nhận MQTT qua WebSocket từ
