@@ -1,4 +1,9 @@
+<<<<<<< HEAD
 ﻿#include <cmath>
+=======
+#include <cmath>
+#include <cstdio>
+>>>>>>> origin/main
 #include <cstdint>
 
 #include "BoardConfig.h"
@@ -9,9 +14,12 @@
 #include "MotorController.h"
 #include "PowerMonitor.h"
 #include "ProjectTypes.h"
+#include "TelemetryLink.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 
 #ifndef DEMO_THROTTLE_ADC_MIN
 #define DEMO_THROTTLE_ADC_MIN 0
@@ -29,12 +37,133 @@ constexpr uint32_t kZeroThrottle = 2;
 constexpr uint32_t kStartThrottle = 5;
 constexpr bool kInvertThrottleDirection = true;
 
+<<<<<<< HEAD
+=======
+enum class ControlState { Locked, Ready, RelaySettling, Running, Fault };
+
+struct TelemetrySnapshot {
+    uint32_t uptimeMilliseconds;
+    float tiltDegrees;
+    int throttleRaw;
+    uint32_t throttlePercent;
+    float filteredThrottlePercent;
+    uint32_t dutyPermille;
+    bool relayOn;
+    ControlState state;
+    bool crashEvent;
+};
+
+// Khai báo toàn bộ các Module của cả nhóm
+>>>>>>> origin/main
 CrashDetector crashDetector;
 DataLogger dataLogger;
 GpsTracker gpsTracker;
 MotorController motor;
 HeadlightController headlight;
 PowerMonitor powerMonitor;
+TelemetryLink telemetry;
+
+QueueHandle_t telemetryQueue = nullptr;
+bool crashDetectorReadyForTelemetry = false;
+bool powerMonitorReadyForTelemetry = false;
+bool gpsTrackerReadyForTelemetry = false;
+bool dataLoggerReadyForTelemetry = false;
+
+const char *phaseName(ControlState state)
+{
+    switch (state) {
+    case ControlState::Locked: return "LOCKED";
+    case ControlState::Ready: return "READY";
+    case ControlState::RelaySettling: return "RELAY_WAIT";
+    case ControlState::Running: return "RUNNING";
+    case ControlState::Fault: return "FAULT_LOCKED";
+    }
+    return "FAULT_LOCKED";
+}
+
+void telemetryTask(void *)
+{
+    PowerReading powerReading = {};
+    GpsFix gpsFix = {};
+
+    for (;;) {
+        TelemetrySnapshot snapshot = {};
+        if (xQueueReceive(telemetryQueue, &snapshot, portMAX_DELAY) != pdPASS) {
+            continue;
+        }
+
+        if (powerMonitorReadyForTelemetry && powerMonitor.read(&powerReading) != ESP_OK) {
+            powerReading = {};
+        }
+
+        if (gpsTrackerReadyForTelemetry) {
+            const esp_err_t gpsErr = gpsTracker.readFix(&gpsFix);
+            if (gpsErr != ESP_OK && gpsErr != ESP_ERR_NOT_FOUND) {
+                gpsFix = {};
+            }
+        }
+
+        TelemetryRecord record = {};
+        record.uptimeMilliseconds = snapshot.uptimeMilliseconds;
+        record.tiltDegrees = snapshot.tiltDegrees;
+        record.throttlePercent = static_cast<uint32_t>(snapshot.filteredThrottlePercent + 0.5F);
+        record.busVoltageVolts = powerReading.busVoltageVolts;
+        record.currentMilliamps = powerReading.currentMilliamps;
+        record.gps = gpsFix;
+
+        bool eepromWriteOk = false;
+        if (dataLoggerReadyForTelemetry) {
+            eepromWriteOk = (dataLogger.append(record) == ESP_OK);
+        }
+
+        const char *phase = phaseName(snapshot.state);
+        ESP_LOGI(TAG, "phase=%s | tilt=%.1f deg | throttle=%lu%% | relay=%s | pwm=%.1f%%",
+                 phase, static_cast<double>(snapshot.tiltDegrees),
+                 static_cast<unsigned long>(snapshot.throttlePercent),
+                 snapshot.relayOn ? "ON" : "OFF",
+                 static_cast<double>(snapshot.dutyPermille / 10.0F));
+
+        const char *eepromStatus = !dataLoggerReadyForTelemetry ? "No-EEPROM"
+                                                                : (eepromWriteOk ? "EEPROM-OK" : "EEPROM-ERR");
+        if (record.gps.valid) {
+            ESP_LOGI(TAG, "telemetry=[%s] %.2fV, %.0fmA | GPS=VALID (Sat=%lu, Lat=%.6f, Lon=%.6f, Spd=%.1fm/s)",
+                     eepromStatus,
+                     static_cast<double>(record.busVoltageVolts),
+                     static_cast<double>(record.currentMilliamps),
+                     static_cast<unsigned long>(record.gps.satellitesInView),
+                     record.gps.latitudeDegrees,
+                     record.gps.longitudeDegrees,
+                     static_cast<double>(record.gps.speedMetersPerSecond));
+        } else {
+            ESP_LOGI(TAG, "telemetry=[%s] %.2fV, %.0fmA | GPS=NO-FIX (Sat=%lu)",
+                     eepromStatus,
+                     static_cast<double>(record.busVoltageVolts),
+                     static_cast<double>(record.currentMilliamps),
+                     static_cast<unsigned long>(record.gps.satellitesInView));
+        }
+
+        const esp_err_t motorPublishErr = telemetry.publishMotorTelemetry(
+            record.uptimeMilliseconds, phase, snapshot.throttleRaw,
+            snapshot.throttlePercent, snapshot.filteredThrottlePercent,
+            snapshot.dutyPermille, snapshot.relayOn);
+        const esp_err_t systemPublishErr = telemetry.publishTelemetry(
+            record, crashDetectorReadyForTelemetry, gpsTrackerReadyForTelemetry,
+            powerMonitorReadyForTelemetry, dataLoggerReadyForTelemetry);
+        if ((motorPublishErr != ESP_OK && motorPublishErr != ESP_ERR_INVALID_STATE) ||
+            (systemPublishErr != ESP_OK && systemPublishErr != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "MQTT publish failed: motor=%s system=%s",
+                     esp_err_to_name(motorPublishErr),
+                     esp_err_to_name(systemPublishErr));
+        }
+        if (snapshot.crashEvent) {
+            const esp_err_t eventErr = telemetry.publishEvent(VehicleEvent::CrashDetected, gpsFix);
+            if (eventErr != ESP_OK && eventErr != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "Crash event publish failed: %s", esp_err_to_name(eventErr));
+            }
+        }
+        std::printf("\n");
+    }
+}
 
 uint32_t rampDuty(uint32_t current, uint32_t target)
 {
@@ -49,8 +178,7 @@ void controlTask(void *)
     const TickType_t relaySettle = pdMS_TO_TICKS(100);
     const TickType_t stopDebounce = pdMS_TO_TICKS(200);
 
-    enum class State { Locked, Ready, RelaySettling, Running, Fault };
-    State state = State::Locked;
+    ControlState state = ControlState::Locked;
 
     bool zeroTiming = false;
     bool relayOn = false;
@@ -66,10 +194,10 @@ void controlTask(void *)
     TickType_t stopSince = 0;
 
     auto triggerSafetyFault = [&](const char *operation, esp_err_t cause) {
-        if (state == State::Fault) {
+        if (state == ControlState::Fault) {
             return;
         }
-        state = State::Fault;
+        state = ControlState::Fault;
         duty = 0;
         filteredThrottle = 0.0F;
         relayOn = false;
@@ -94,6 +222,12 @@ void controlTask(void *)
     requireOk(motor.setMotorDutyPercent(0), "initial PWM zero");
     requireOk(motor.setMotorPowerEnabled(false), "initial relay OFF");
 
+    const esp_err_t networkErr = telemetry.initialize(CONFIG_DEMO_MQTT_BROKER_URI);
+    if (networkErr != ESP_OK) {
+        ESP_LOGW(TAG, "Network unavailable: %s; local control continues",
+                 esp_err_to_name(networkErr));
+    }
+
     esp_err_t err = headlight.initialize();
     const bool headlightReady = (err == ESP_OK);
     if (!headlightReady) {
@@ -101,8 +235,14 @@ void controlTask(void *)
     }
 
     err = crashDetector.initialize();
-    if (err != ESP_OK) {
+    const bool crashDetectorReady = (err == ESP_OK) && crashDetector.isAvailable();
+    if (!crashDetectorReady) {
         ESP_LOGW(TAG, "MPU6050 unavailable: %s", esp_err_to_name(err));
+#if CONFIG_DEMO_REQUIRE_MPU6050
+        triggerSafetyFault("MPU6050 required but unavailable", ESP_ERR_NOT_FOUND);
+#else
+        ESP_LOGW(TAG, "BENCH TEST: motor is allowed without MPU6050");
+#endif
     }
 
     err = powerMonitor.initialize();
@@ -132,12 +272,29 @@ void controlTask(void *)
         }
     }
 
+<<<<<<< HEAD
     ESP_LOGI(TAG, "SYSTEM READY: Return throttle <=2%% for 1s to ARM; >=5%% to run.");
+=======
+    crashDetectorReadyForTelemetry = crashDetectorReady;
+    powerMonitorReadyForTelemetry = powerMonitorReady;
+    gpsTrackerReadyForTelemetry = gpsTrackerReady;
+    dataLoggerReadyForTelemetry = dataLoggerReady;
+
+    telemetryQueue = xQueueCreate(1, sizeof(TelemetrySnapshot));
+    if (telemetryQueue == nullptr) {
+        ESP_LOGE(TAG, "Could not create telemetry queue; local control continues");
+    } else if (xTaskCreate(telemetryTask, "vehicle_telemetry", 6144, nullptr, 3, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Could not create telemetry task; local control continues");
+        vQueueDelete(telemetryQueue);
+        telemetryQueue = nullptr;
+    }
+
+    ESP_LOGI(TAG, "SYSTEM READY: Return throttle <=2%% for 1s to arm; start >=5%%.");
+>>>>>>> origin/main
 
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastLog = lastWake;
-    PowerReading powerReading = {};
-    GpsFix gpsFix = {};
+    bool pendingCrashEvent = false;
 
     for (;;) {
         const TickType_t now = xTaskGetTickCount();
@@ -145,6 +302,7 @@ void controlTask(void *)
         float ambientLux = -1.0F;
         bool crashDetected = false;
 
+<<<<<<< HEAD
         err = crashDetector.update(&tiltDegrees, &crashDetected);
         if (err != ESP_OK) {
             mpuFailStreak++;
@@ -156,6 +314,16 @@ void controlTask(void *)
             lastTiltDegrees = tiltDegrees;
             if (crashDetected) {
                 triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
+=======
+        // A. Kiểm tra góc nghiêng & phát hiện ngã xe (CrashDetector)
+        if (crashDetectorReady) {
+            err = crashDetector.update(&tiltDegrees, &crashDetected);
+            if (err != ESP_OK) {
+                triggerSafetyFault("MPU6050 read failed", err);
+            } else if (crashDetected && state != ControlState::Fault) {
+                triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
+                pendingCrashEvent = true;
+>>>>>>> origin/main
             }
         }
 
@@ -172,7 +340,7 @@ void controlTask(void *)
             raw = DEMO_THROTTLE_ADC_MAX - (bounded - DEMO_THROTTLE_ADC_MIN);
         }
 
-        if (state != State::Fault) {
+        if (state != ControlState::Fault) {
             if (throttle <= kZeroThrottle) {
                 if (!relayOn) filteredThrottle = 0.0F;
                 if (relayOn && !stopTiming) {
@@ -185,20 +353,25 @@ void controlTask(void *)
                     filteredThrottle = 0.0F;
                     requireOk(motor.setMotorPowerEnabled(false), "stop relay");
                     relayOn = false;
-                    if (state != State::Fault) {
-                        state = State::Ready;
+                    if (state != ControlState::Fault) {
+                        state = ControlState::Ready;
                     }
                     zeroTiming = false;
                     stopTiming = false;
                 }
-                if (state == State::Locked) {
+                if (state == ControlState::Locked) {
                     if (!zeroTiming) {
                         zeroSince = now;
                         zeroTiming = true;
                     }
                     if (static_cast<TickType_t>(now - zeroSince) >= zeroHold) {
+<<<<<<< HEAD
                         state = State::Ready;
                         ESP_LOGI(TAG, "ARMED: Motor ready.");
+=======
+                        state = ControlState::Ready;
+                        ESP_LOGI(TAG, "ARMED: throttle may now start motor.");
+>>>>>>> origin/main
                     }
                 }
             } else {
@@ -210,20 +383,20 @@ void controlTask(void *)
                                      (DEMO_THROTTLE_ADC_MAX - DEMO_THROTTLE_ADC_MIN);
                 filteredThrottle += 0.2F * (target - filteredThrottle);
 
-                if (state == State::Ready && throttle >= kStartThrottle &&
+                if (state == ControlState::Ready && throttle >= kStartThrottle &&
                     filteredThrottle >= kStartThrottle * 10.0F) {
                     requireOk(motor.setMotorPowerEnabled(true), "relay ON");
-                    if (state != State::Fault) {
+                    if (state != ControlState::Fault) {
                         relayOn = true;
                         relaySince = now;
-                        state = State::RelaySettling;
+                        state = ControlState::RelaySettling;
                     }
                 }
-                if (state == State::RelaySettling &&
+                if (state == ControlState::RelaySettling &&
                     static_cast<TickType_t>(now - relaySince) >= relaySettle) {
-                    state = State::Running;
+                    state = ControlState::Running;
                 }
-                if (state == State::Running) {
+                if (state == ControlState::Running) {
                     const uint32_t nextDuty = rampDuty(duty, static_cast<uint32_t>(filteredThrottle + 0.5F));
                     if (nextDuty != duty) {
                         requireOk(motor.setMotorDutyPermille(nextDuty), "running PWM");
@@ -234,15 +407,43 @@ void controlTask(void *)
         }
 
         if (headlightReady) {
+<<<<<<< HEAD
             headlight.updateAutoHeadlight(state == State::Fault, &ambientLux, &lightDuty);
         }
 
+=======
+            const float limitedTilt = (tiltDegrees < kMaximumDimmingTiltDegrees)
+                                          ? tiltDegrees
+                                          : kMaximumDimmingTiltDegrees;
+            const uint32_t targetLightDuty = static_cast<uint32_t>(
+                100.0F - ((limitedTilt / kMaximumDimmingTiltDegrees) * 60.0F));
+            if (lightDuty < targetLightDuty) {
+                lightDuty += (targetLightDuty - lightDuty > 2U) ? 2U : (targetLightDuty - lightDuty);
+            } else if (lightDuty > targetLightDuty) {
+                lightDuty -= (lightDuty - targetLightDuty > 2U) ? 2U : (lightDuty - targetLightDuty);
+            }
+            headlight.setBrightnessPercent(state == ControlState::Fault ? 0U : lightDuty);
+        }
+
+        // D. Chu kỳ 1 giây: gửi ảnh chụp trạng thái sang task telemetry.
+>>>>>>> origin/main
         if (static_cast<TickType_t>(now - lastLog) >= pdMS_TO_TICKS(kTelemetryPeriodMs)) {
-            if (powerMonitorReady) {
-                if (powerMonitor.read(&powerReading) != ESP_OK) {
-                    powerReading = {};
+            if (telemetryQueue != nullptr) {
+                TelemetrySnapshot snapshot = {};
+                snapshot.uptimeMilliseconds = static_cast<uint32_t>(now * portTICK_PERIOD_MS);
+                snapshot.tiltDegrees = tiltDegrees;
+                snapshot.throttleRaw = raw;
+                snapshot.throttlePercent = throttle;
+                snapshot.filteredThrottlePercent = filteredThrottle / 10.0F;
+                snapshot.dutyPermille = duty;
+                snapshot.relayOn = relayOn;
+                snapshot.state = state;
+                snapshot.crashEvent = pendingCrashEvent;
+                if (xQueueOverwrite(telemetryQueue, &snapshot) == pdPASS) {
+                    pendingCrashEvent = false;
                 }
             }
+<<<<<<< HEAD
 
             if (gpsTrackerReady) {
                 err = gpsTracker.readFix(&gpsFix);
@@ -305,6 +506,8 @@ void controlTask(void *)
                      eepromStatus, static_cast<unsigned long>(record.uptimeMilliseconds));
             ESP_LOGI(TAG, "============================================================\n");
 
+=======
+>>>>>>> origin/main
             lastLog = now;
         }
 

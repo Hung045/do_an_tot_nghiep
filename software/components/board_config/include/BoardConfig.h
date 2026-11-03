@@ -39,9 +39,17 @@
 #define DEMO_BATTERY_NOMINAL_MILLIVOLTS  11100
 #define DEMO_BATTERY_FULL_MILLIVOLTS     12600
 
+<<<<<<< HEAD
 #define DEMO_RELAY_ACTIVE_LEVEL          0
 
 #define DEMO_PWM_FREQUENCY_HZ            20000
+=======
+// Relay module is active-low; verify against the actual module before use.
+#define DEMO_RELAY_ACTIVE_LEVEL          0
+
+// Diagnostic frequency for the LR7843 module; confirm output on hardware.
+#define DEMO_PWM_FREQUENCY_HZ            1000
+>>>>>>> origin/main
 #define DEMO_PWM_RESOLUTION_BITS         10
 
 #ifdef __cplusplus

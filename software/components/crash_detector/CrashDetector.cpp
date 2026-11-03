@@ -12,7 +12,7 @@ namespace {
 
 constexpr i2c_port_t kI2cPort = I2C_NUM_0;
 constexpr uint8_t kWhoAmIRegister = 0x75;
-constexpr uint8_t kConfigRegister = 0x1A; 
+constexpr uint8_t kConfigRegister = 0x1A;
 constexpr uint8_t kAccelDataRegister = 0x3B;
 constexpr uint8_t kPowerManagementRegister = 0x6B;
 constexpr float kRadiansToDegrees = 180.0F / 3.14159265F;
