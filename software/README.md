@@ -32,6 +32,46 @@ there are no separate example projects or selectable test modes.
 
 ## Current main: integrated vehicle test
 
+The application now has four FreeRTOS tasks (priorities below are application
+priorities; ESP-IDF also runs its own Wi-Fi/MQTT tasks):
+
+| Task | Work | Timing / priority |
+| --- | --- | --- |
+| `vehicle_control` | MPU6050, throttle, safety lock, motor PWM and relay | target 20 ms / 5 |
+| `vehicle_light` | BH1750 and headlight, including fault blinking | 100 ms delay between updates / 4 |
+| `vehicle_telemetry` | GPS, INA226, EEPROM and Monitor logs | one snapshot per second / 3 |
+| `vehicle_network` | Wi-Fi startup and MQTT publishing | waits for queued snapshots / 2 |
+
+Network writes run only in `vehicle_network`. A one-element queue replaces
+pending periodic telemetry with the latest sample. Frames older than 1.5 s are
+skipped before publishing; an already-started socket write cannot be recalled.
+Individual MQTT network operations use a 2 s timeout, which is not a guarantee
+of total end-to-end delivery latency. Slow sends log `MQTT send=... ms`.
+GPS/EEPROM/logs and headlight work therefore do not wait on MQTT socket writes.
+I2C devices still serialize access using the shared mutex, so the task periods
+are targets, not hard real-time guarantees.
+
+The crash flag stays latched until reset. Telemetry puts the first crash in a
+separate queue and the network task retries until MQTT accepts it into the
+bounded QoS 1 outbox. Periodic sample replacement cannot overwrite this event.
+This queue/outbox is in RAM: reset or extended offline expiry can still lose an
+undelivered event. EEPROM history is separate from MQTT event delivery.
+
+After flashing, verify with motor load power disconnected:
+
+1. Compare throttle in Monitor, `vehicle/motor` and the web with a healthy
+   network. Samples remain at 1 Hz; record any persistent delay.
+2. Stop the broker for 15 seconds. Monitor and EEPROM should continue updating;
+   cover/uncover BH1750 to check that the headlight still responds.
+3. Trigger a tilt fault while offline. PWM/relay commands must go to OFF/zero
+   and the light must blink. Do not reset yet.
+4. Restart the broker. Check that current telemetry resumes without replaying
+   a backlog of periodic samples and a `vehicle/event` crash message arrives
+   (subscribe before the broker reconnects the ESP32). QoS 1 can duplicate it.
+5. Reset only after checking the event. Return throttle to zero to re-arm.
+
+Build checks cannot replace these hardware/network tests.
+
 PWM frequency is temporarily 1 kHz (previously 20 kHz) to diagnose the
 LR7843 output appearing near supply voltage at low duty. Compare settled
 10%, 20%, and 30% duty readings and motor response; a DC meter does not

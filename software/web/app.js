@@ -4,6 +4,10 @@ const MAX_SAMPLES = 60;
 const STALE_AFTER_SECONDS = 5;
 const VALID_PHASES = ["LOCKED", "READY", "RELAY_WAIT", "RUNNING", "FAULT_LOCKED"];
 const VALID_EVENTS = ["crash_detected", "power_warning", "sensor_fault"];
+const PHASE_LABELS = {
+  LOCKED: "Chờ về ga 0", READY: "Sẵn sàng", RELAY_WAIT: "Chuẩn bị chạy",
+  RUNNING: "Đang chạy", FAULT_LOCKED: "Khóa an toàn"
+};
 const samples = [];
 const brokerHost = location.hostname || "127.0.0.1";
 const brokerUrl = `ws://${brokerHost}:9001`;
@@ -15,11 +19,92 @@ const show = (id, value) => {
 let lastReceived = null;
 let lastUptime = null;
 let lastEvent = null;
+let lastSystemReceived = null;
+let lastSystemData = null;
+let followVehicle = true;
+let gpsMap = null;
+let gpsMarker = null;
+let gpsTrail = null;
+let hasCenteredMap = false;
+const gpsTrailPoints = [];
+
+function initializeMap() {
+  if (typeof L === "undefined") {
+    show("map-status", "Không tải được thư viện bản đồ. Kiểm tra Internet rồi tải lại trang.");
+    return;
+  }
+
+  gpsMap = L.map("gps-map").setView([21.0285, 105.8542], 12);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(gpsMap);
+  gpsTrail = L.polyline([], {
+    color: "#42d6bd",
+    weight: 3,
+    opacity: 0.75
+  }).addTo(gpsMap);
+}
+
+function updateGpsFreshness() {
+  if (!lastSystemData) return;
+  const stale = (performance.now() - lastSystemReceived) / 1000 >= STALE_AFTER_SECONDS;
+  document.body.classList.toggle("sensors-stale", stale);
+  if (gpsMarker) gpsMarker.setOpacity(stale || !lastSystemData.gps_valid ? 0.45 : 1);
+  if (stale) {
+    show("gps-summary", "Dữ liệu cũ");
+    show("gps-status", "Chờ cập nhật từ ESP32");
+    if (gpsMap) show("map-status", "Mất cập nhật GPS — điểm trên bản đồ là vị trí nhận trước đó.");
+  }
+}
+
+function updateMap(data) {
+  if (!gpsMap) return;
+  if (!data.gps_available || !data.gps_valid) {
+    if (gpsMarker) gpsMarker.setOpacity(0.45);
+    show("map-status", gpsMarker
+      ? "GPS mất định vị — đang giữ vị trí nhận gần nhất."
+      : "Đang chờ GPS xác định vị trí xe.");
+    return;
+  }
+
+  const point = [data.latitude_deg, data.longitude_deg];
+  if (!gpsMarker) {
+    gpsMarker = L.marker(point).addTo(gpsMap);
+  } else {
+    gpsMarker.setLatLng(point);
+  }
+  gpsMarker.setOpacity(1);
+  gpsMarker.bindPopup(
+    `<strong>Vị trí xe</strong><br>${data.latitude_deg.toFixed(6)}, ${data.longitude_deg.toFixed(6)}` +
+    `<br>${data.satellites ?? 0} vệ tinh · ${(data.speed_mps ?? 0).toFixed(2)} m/s`
+  );
+
+  const previous = gpsTrailPoints[gpsTrailPoints.length - 1];
+  if (!previous || previous[0] !== point[0] || previous[1] !== point[1]) {
+    gpsTrailPoints.push(point);
+    if (gpsTrailPoints.length > 100) gpsTrailPoints.shift();
+    gpsTrail.setLatLngs(gpsTrailPoints);
+  }
+
+  if (!hasCenteredMap) {
+    gpsMap.setView(point, 17);
+    hasCenteredMap = true;
+  } else if (followVehicle) {
+    gpsMap.panTo(point, { animate: true, duration: 0.5 });
+  }
+
+  show("map-status",
+    `Đã định vị · ${data.satellites ?? 0} vệ tinh`);
+  const externalLink = document.getElementById("map-external-link");
+  externalLink.href = `https://www.openstreetmap.org/?mlat=${data.latitude_deg}&mlon=${data.longitude_deg}#map=18/${data.latitude_deg}/${data.longitude_deg}`;
+  externalLink.hidden = false;
+}
 
 function setConnection(message, state) {
   const badge = document.getElementById("connection");
   badge.className = `connection-badge is-${state}`;
-  show("connection", message);
+  show("connection-text", message);
 }
 
 function setAlert(message, level) {
@@ -33,6 +118,7 @@ function setAlert(message, level) {
 }
 
 function updateFreshness() {
+  updateGpsFreshness();
   const age = lastReceived === null ? null : (performance.now() - lastReceived) / 1000;
   const stale = age === null || age >= STALE_AFTER_SECONDS;
   document.body.classList.toggle("stale", stale);
@@ -43,7 +129,9 @@ function updateFreshness() {
     : `Đang cập nhật · ${Math.floor(age)} giây trước`);
 
   if (stale && age !== null) {
-    setAlert("Mất telemetry quá 5 giây. Kiểm tra ESP32, Wi-Fi và kết nối MQTT.", "warning");
+    const fault = document.body.dataset.phase === "FAULT_LOCKED";
+    setAlert(fault ? "Xe đã báo khóa an toàn. Hiện mất cập nhật; kiểm tra ESP32 và kết nối."
+      : "Mất dữ liệu động cơ quá 5 giây. Kiểm tra ESP32 và kết nối.", fault ? "danger" : "warning");
   }
 }
 
@@ -114,6 +202,11 @@ function checkCommandState(data) {
     return;
   }
 
+  if (data.phase === "LOCKED") {
+    setAlert("Đưa tay ga về 0–2% trong một giây để mở khóa khởi động.", "warning");
+    return;
+  }
+
   setAlert("Không phát hiện trạng thái lệnh bất thường.", "success");
 }
 
@@ -131,6 +224,9 @@ function renderTelemetry(data) {
   if (lastUptime !== null && data.uptime_ms < lastUptime) {
     samples.length = 0;
     lastEvent = null;
+    document.getElementById("event-panel").classList.remove("has-event");
+    gpsTrailPoints.length = 0;
+    if (gpsTrail) gpsTrail.setLatLngs([]);
     show("event-status", "Chưa có sự kiện sau khi khởi động lại");
     show("event-location", "—");
     show("event-time", "—");
@@ -141,7 +237,8 @@ function renderTelemetry(data) {
   show("filtered", `${data.filtered_pct.toFixed(1)}%`);
   show("pwm", `${data.pwm_pct.toFixed(1)}%`);
   show("relay", data.relay_cmd ? "BẬT" : "TẮT");
-  show("phase", data.phase.replace("_", " "));
+  show("phase", PHASE_LABELS[data.phase]);
+  document.body.dataset.phase = data.phase;
   show("phase-indicator", data.phase);
   show("raw", data.raw);
   show("uptime", formatUptime(data.uptime_ms));
@@ -161,17 +258,28 @@ function validateSystemTelemetry(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   const flags = [data.mpu_available, data.gps_available,
     data.power_available, data.eeprom_available, data.gps_valid];
-  return flags.every(value => typeof value === "boolean") &&
+  const coordinatesValid = !data.gps_valid ||
+    (Number.isFinite(data.latitude_deg) && data.latitude_deg >= -90 && data.latitude_deg <= 90 &&
+     Number.isFinite(data.longitude_deg) && data.longitude_deg >= -180 && data.longitude_deg <= 180);
+  return flags.every(value => typeof value === "boolean") && coordinatesValid &&
+    (!data.gps_valid || data.gps_available) &&
+    (data.satellites == null || (Number.isInteger(data.satellites) && data.satellites >= 0)) &&
+    (data.speed_mps == null || (Number.isFinite(data.speed_mps) && data.speed_mps >= 0)) &&
     (data.tilt_deg === null || Number.isFinite(data.tilt_deg)) &&
     (data.bus_voltage_v === null || Number.isFinite(data.bus_voltage_v)) &&
     (data.current_ma === null || Number.isFinite(data.current_ma));
 }
 
 function renderSystemTelemetry(data) {
+  lastSystemReceived = performance.now();
+  lastSystemData = data;
+  document.body.classList.remove("sensors-stale");
   show("mpu-status", data.mpu_available ? "Đã kết nối" : "Không phát hiện");
   show("tilt", data.mpu_available && data.tilt_deg !== null
     ? `${data.tilt_deg.toFixed(1)}°` : "—");
   show("gps-status", data.gps_available ? "Đã khởi tạo" : "Không phát hiện");
+  show("gps-summary", !data.gps_available ? "KHÔNG CÓ" : data.gps_valid
+    ? `${data.satellites ?? 0} VỆ TINH` : "CHƯA FIX");
   show("gps-fix", !data.gps_available ? "—" : data.gps_valid
     ? `${data.latitude_deg.toFixed(6)}, ${data.longitude_deg.toFixed(6)}`
     : "Chưa có vị trí");
@@ -179,6 +287,8 @@ function renderSystemTelemetry(data) {
   show("power-reading", data.power_available && data.bus_voltage_v !== null && data.current_ma !== null
     ? `${data.bus_voltage_v.toFixed(2)} V / ${data.current_ma.toFixed(0)} mA` : "—");
   show("eeprom-status", data.eeprom_available ? "Sẵn sàng" : "Không phát hiện");
+  updateMap(data);
+  show("payload", JSON.stringify(data, null, 2));
 }
 
 function validateEvent(data) {
@@ -198,6 +308,7 @@ function renderEvent(data) {
     sensor_fault: "Lỗi cảm biến"
   };
   lastEvent = data;
+  document.getElementById("event-panel").classList.add("has-event");
   show("event-status", labels[data.event]);
   show("event-location", data.gps_valid
     ? `${data.latitude_deg.toFixed(6)}, ${data.longitude_deg.toFixed(6)}`
@@ -217,6 +328,13 @@ function renderEvent(data) {
   setAlert(`${labels[data.event]}${location}.`, level);
 }
 
+initializeMap();
+document.getElementById("map-follow").addEventListener("click", () => {
+  followVehicle = !followVehicle;
+  document.getElementById("map-follow").setAttribute("aria-pressed", String(followVehicle));
+  show("map-follow", `Bám theo xe: ${followVehicle ? "Bật" : "Tắt"}`);
+  if (followVehicle && gpsMarker) gpsMap.panTo(gpsMarker.getLatLng());
+});
 updateChart();
 updateFreshness();
 setInterval(updateFreshness, 1000);

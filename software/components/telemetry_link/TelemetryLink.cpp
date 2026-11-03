@@ -315,8 +315,10 @@ esp_err_t TelemetryLink::startMqttClient()
 
     esp_mqtt_client_config_t config = {};
     config.broker.address.uri = brokerUri_;
-    // Two telemetry streams are queued every second. Keep a finite limit so
-    // temporary network stalls do not consume unbounded RAM.
+    // Bound individual socket operations on the local broker. A timeout may
+    // still delay network delivery, but never runs in the sensor/control tasks.
+    config.network.timeout_ms = 2000;
+    // Only QoS 1 events use the outbox; periodic QoS 0 samples are sent live.
     config.outbox.limit = 8192;
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&config);
     if (client == nullptr) {

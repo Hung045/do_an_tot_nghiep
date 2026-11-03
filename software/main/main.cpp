@@ -1,6 +1,7 @@
 ﻿#include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <atomic>
 
 #include "BoardConfig.h"
 #include "CrashDetector.h"
@@ -47,6 +48,16 @@ struct TelemetrySnapshot {
     bool crashEvent;
 };
 
+struct NetworkSnapshot {
+    TelemetrySnapshot motor;
+    TelemetryRecord record;
+};
+
+struct LightSnapshot {
+    float ambientLux;
+    uint32_t duty;
+};
+
 // Khai báo toàn bộ các Module của cả nhóm
 CrashDetector crashDetector;
 DataLogger dataLogger;
@@ -57,11 +68,14 @@ PowerMonitor powerMonitor;
 TelemetryLink telemetry;
 
 QueueHandle_t telemetryQueue = nullptr;
+QueueHandle_t networkQueue = nullptr;
+QueueHandle_t crashQueue = nullptr;
+QueueHandle_t lightQueue = nullptr;
+std::atomic<bool> safetyFault{false};
 bool crashDetectorReadyForTelemetry = false;
 bool powerMonitorReadyForTelemetry = false;
 bool gpsTrackerReadyForTelemetry = false;
 bool dataLoggerReadyForTelemetry = false;
-bool headlightReadyForTelemetry = false;
 
 const char *phaseName(ControlState state)
 {
@@ -75,11 +89,76 @@ const char *phaseName(ControlState state)
     return "FAULT_LOCKED";
 }
 
+// Only this task calls the network APIs: a socket timeout cannot hold up
+// logging, EEPROM, GPS or headlight updates. Queues contain value copies.
+void networkTask(void *)
+{
+    const esp_err_t err = telemetry.initialize(CONFIG_DEMO_MQTT_BROKER_URI);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Network unavailable: %s; local tasks continue", esp_err_to_name(err));
+    }
+    for (;;) {
+        NetworkSnapshot frame = {};
+        const bool received = xQueueReceive(networkQueue, &frame, pdMS_TO_TICKS(100)) == pdPASS;
+
+        // A crash has its own queue, so overwriting live samples cannot lose it.
+        // Remove it only after MQTT accepts it into its bounded QoS 1 outbox.
+        GpsFix eventFix = {};
+        if (xQueuePeek(crashQueue, &eventFix, 0) == pdPASS &&
+            telemetry.publishEvent(VehicleEvent::CrashDetected, eventFix) == ESP_OK) {
+            xQueueReceive(crashQueue, &eventFix, 0);
+        }
+        if (!received) continue;
+
+        // Event enqueueing can also wait on the MQTT mutex. Refresh afterwards.
+        NetworkSnapshot newer = {};
+        if (xQueueReceive(networkQueue, &newer, 0) == pdPASS) frame = newer;
+        const auto sampleAgeMs = [&]() -> uint32_t {
+            return static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS) -
+                   frame.record.uptimeMilliseconds;
+        };
+        if (sampleAgeMs() > 1500U) continue;
+
+        const TickType_t started = xTaskGetTickCount();
+        const auto &snapshot = frame.motor;
+        const esp_err_t motorErr = telemetry.publishMotorTelemetry(
+            frame.record.uptimeMilliseconds, phaseName(snapshot.state), snapshot.throttleRaw,
+            snapshot.throttlePercent, snapshot.filteredThrottlePercent,
+            snapshot.dutyPermille, snapshot.relayOn);
+        esp_err_t systemErr = ESP_ERR_INVALID_STATE;
+        // Do not send the second half of an old frame after a blocked write.
+        if (sampleAgeMs() <= 1500U) {
+            systemErr = telemetry.publishTelemetry(
+                frame.record, crashDetectorReadyForTelemetry, gpsTrackerReadyForTelemetry,
+                powerMonitorReadyForTelemetry, dataLoggerReadyForTelemetry);
+        }
+        const uint32_t elapsedMs = (xTaskGetTickCount() - started) * portTICK_PERIOD_MS;
+        if (elapsedMs >= 500U ||
+            (motorErr != ESP_OK && motorErr != ESP_ERR_INVALID_STATE) ||
+            (systemErr != ESP_OK && systemErr != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "MQTT send=%lu ms | motor=%s system=%s | local tasks continue",
+                     static_cast<unsigned long>(elapsedMs),
+                     esp_err_to_name(motorErr), esp_err_to_name(systemErr));
+        }
+    }
+}
+
+void headlightTask(void *)
+{
+    for (;;) {
+        LightSnapshot reading = {-1.0F, 0};
+        headlight.updateAutoHeadlight(safetyFault.load(), &reading.ambientLux, &reading.duty);
+        xQueueOverwrite(lightQueue, &reading);
+        // Always yield even when the shared I2C bus is slow.
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 void telemetryTask(void *)
 {
     PowerReading powerReading = {};
     GpsFix gpsFix = {};
-    ControlState currentState = ControlState::Locked;
+    bool crashQueued = false;
     float ambientLux = -1.0F;
     uint32_t lightDuty = 0;
 
@@ -87,12 +166,10 @@ void telemetryTask(void *)
         TelemetrySnapshot snapshot = {};
         const BaseType_t received = xQueueReceive(
             telemetryQueue, &snapshot, pdMS_TO_TICKS(100));
-        if (received == pdPASS) {
-            currentState = snapshot.state;
-        }
-        if (headlightReadyForTelemetry) {
-            headlight.updateAutoHeadlight(
-                currentState == ControlState::Fault, &ambientLux, &lightDuty);
+        LightSnapshot light = {};
+        if (lightQueue != nullptr && xQueuePeek(lightQueue, &light, 0) == pdPASS) {
+            ambientLux = light.ambientLux;
+            lightDuty = light.duty;
         }
         if (received != pdPASS) {
             continue;
@@ -117,61 +194,59 @@ void telemetryTask(void *)
         record.currentMilliamps = powerReading.currentMilliamps;
         record.gps = gpsFix;
 
+        // The crash bit remains latched in every control snapshot until reset.
+        if (snapshot.crashEvent && !crashQueued && crashQueue != nullptr) {
+            crashQueued = xQueueSend(crashQueue, &gpsFix, 0) == pdPASS;
+        }
+        if (networkQueue != nullptr) {
+            const NetworkSnapshot frame = {snapshot, record};
+            xQueueOverwrite(networkQueue, &frame);
+        }
+
         bool eepromWriteOk = false;
         if (dataLoggerReadyForTelemetry) {
             eepromWriteOk = (dataLogger.append(record) == ESP_OK);
         }
 
         const char *phase = phaseName(snapshot.state);
-        ESP_LOGI(TAG, "phase=%s | tilt=%.1f deg | throttle=%lu%% | relay=%s | pwm=%.1f%%",
-                 phase, static_cast<double>(snapshot.tiltDegrees),
-                 static_cast<unsigned long>(snapshot.throttlePercent),
-                 snapshot.relayOn ? "ON" : "OFF",
-                 static_cast<double>(snapshot.dutyPermille / 10.0F));
-        ESP_LOGI(TAG, "headlight=%s | ambient=%.1f lux | duty=%lu%%",
-             snapshot.state == ControlState::Fault ? "FAULT BLINK" :
-             (lightDuty > 0U ? "ON" : "OFF"),
-             static_cast<double>(ambientLux),
-             static_cast<unsigned long>(lightDuty));
+        const char *eepromStatus = !dataLoggerReadyForTelemetry ? "MISSING"
+                                                                : (eepromWriteOk ? "OK" : "WRITE_ERROR");
 
-        const char *eepromStatus = !dataLoggerReadyForTelemetry ? "No-EEPROM"
-                                                                : (eepromWriteOk ? "EEPROM-OK" : "EEPROM-ERR");
-        if (record.gps.valid) {
-            ESP_LOGI(TAG, "telemetry=[%s] %.2fV, %.0fmA | GPS=VALID (Sat=%lu, Lat=%.6f, Lon=%.6f, Spd=%.1fm/s)",
+        ESP_LOGI(TAG, "========== VEHICLE | %.1f s | %s ==========",
+                 static_cast<double>(record.uptimeMilliseconds / 1000.0F), phase);
+        ESP_LOGI(TAG, "MOTOR   throttle=%3lu%% | filtered=%5.1f%% | PWM=%5.1f%% | relay=%s | ADC=%d",
+                 static_cast<unsigned long>(snapshot.throttlePercent),
+                 static_cast<double>(snapshot.filteredThrottlePercent),
+                 static_cast<double>(snapshot.dutyPermille / 10.0F),
+                 snapshot.relayOn ? "ON" : "OFF", snapshot.throttleRaw);
+        ESP_LOGI(TAG, "SENSORS MPU6050=%s (tilt=%5.1f deg) | BH1750=%s (lux=%6.1f) | light=%s %lu%%",
+                 crashDetectorReadyForTelemetry ? "OK" : "MISSING",
+                 static_cast<double>(snapshot.tiltDegrees),
+                 ambientLux >= 0.0F ? "OK" : "MISSING",
+                 static_cast<double>(ambientLux),
+                 snapshot.state == ControlState::Fault ? "BLINK" :
+                 (lightDuty > 0U ? "ON" : "OFF"),
+                 static_cast<unsigned long>(lightDuty));
+        if (powerMonitorReadyForTelemetry) {
+            ESP_LOGI(TAG, "STORAGE EEPROM=%s | INA226=OK (%.2f V, %.0f mA)",
                      eepromStatus,
                      static_cast<double>(record.busVoltageVolts),
-                     static_cast<double>(record.currentMilliamps),
+                     static_cast<double>(record.currentMilliamps));
+        } else {
+            ESP_LOGI(TAG, "STORAGE EEPROM=%s | INA226=MISSING", eepromStatus);
+        }
+
+        if (record.gps.valid) {
+            ESP_LOGI(TAG, "GPS     FIX=YES | satellites=%lu | lat=%.6f | lon=%.6f | speed=%.2f m/s",
                      static_cast<unsigned long>(record.gps.satellitesInView),
                      record.gps.latitudeDegrees,
                      record.gps.longitudeDegrees,
                      static_cast<double>(record.gps.speedMetersPerSecond));
         } else {
-            ESP_LOGI(TAG, "telemetry=[%s] %.2fV, %.0fmA | GPS=NO-FIX (Sat=%lu)",
-                     eepromStatus,
-                     static_cast<double>(record.busVoltageVolts),
-                     static_cast<double>(record.currentMilliamps),
+            ESP_LOGI(TAG, "GPS     FIX=NO  | satellites=%lu",
                      static_cast<unsigned long>(record.gps.satellitesInView));
         }
 
-        const esp_err_t motorPublishErr = telemetry.publishMotorTelemetry(
-            record.uptimeMilliseconds, phase, snapshot.throttleRaw,
-            snapshot.throttlePercent, snapshot.filteredThrottlePercent,
-            snapshot.dutyPermille, snapshot.relayOn);
-        const esp_err_t systemPublishErr = telemetry.publishTelemetry(
-            record, crashDetectorReadyForTelemetry, gpsTrackerReadyForTelemetry,
-            powerMonitorReadyForTelemetry, dataLoggerReadyForTelemetry);
-        if ((motorPublishErr != ESP_OK && motorPublishErr != ESP_ERR_INVALID_STATE) ||
-            (systemPublishErr != ESP_OK && systemPublishErr != ESP_ERR_INVALID_STATE)) {
-            ESP_LOGW(TAG, "MQTT publish failed: motor=%s system=%s",
-                     esp_err_to_name(motorPublishErr),
-                     esp_err_to_name(systemPublishErr));
-        }
-        if (snapshot.crashEvent) {
-            const esp_err_t eventErr = telemetry.publishEvent(VehicleEvent::CrashDetected, gpsFix);
-            if (eventErr != ESP_OK && eventErr != ESP_ERR_INVALID_STATE) {
-                ESP_LOGW(TAG, "Crash event publish failed: %s", esp_err_to_name(eventErr));
-            }
-        }
         std::printf("\n");
     }
 }
@@ -208,6 +283,7 @@ void controlTask(void *)
             return;
         }
         state = ControlState::Fault;
+        safetyFault.store(true);
         duty = 0;
         filteredThrottle = 0.0F;
         relayOn = false;
@@ -232,15 +308,8 @@ void controlTask(void *)
     requireOk(motor.setMotorDutyPercent(0), "initial PWM zero");
     requireOk(motor.setMotorPowerEnabled(false), "initial relay OFF");
 
-    const esp_err_t networkErr = telemetry.initialize(CONFIG_DEMO_MQTT_BROKER_URI);
-    if (networkErr != ESP_OK) {
-        ESP_LOGW(TAG, "Network unavailable: %s; local control continues",
-                 esp_err_to_name(networkErr));
-    }
-
     esp_err_t err = headlight.initialize();
     const bool headlightReady = (err == ESP_OK);
-    headlightReadyForTelemetry = headlightReady;
     if (!headlightReady) {
         ESP_LOGW(TAG, "Headlight init failed: %s", esp_err_to_name(err));
     }
@@ -288,6 +357,28 @@ void controlTask(void *)
     gpsTrackerReadyForTelemetry = gpsTrackerReady;
     dataLoggerReadyForTelemetry = dataLoggerReady;
 
+    // Publish all initialization flags before starting their consumer tasks.
+    networkQueue = xQueueCreate(1, sizeof(NetworkSnapshot));
+    crashQueue = xQueueCreate(1, sizeof(GpsFix));
+    if (networkQueue == nullptr || crashQueue == nullptr ||
+        xTaskCreate(networkTask, "vehicle_network", 6144, nullptr, 2, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Network task unavailable; local control/logging continue");
+        if (networkQueue != nullptr) vQueueDelete(networkQueue);
+        if (crashQueue != nullptr) vQueueDelete(crashQueue);
+        networkQueue = nullptr;
+        crashQueue = nullptr;
+    }
+
+    if (headlightReady) {
+        lightQueue = xQueueCreate(1, sizeof(LightSnapshot));
+        if (lightQueue == nullptr ||
+            xTaskCreate(headlightTask, "vehicle_light", 4096, nullptr, 4, nullptr) != pdPASS) {
+            if (lightQueue != nullptr) vQueueDelete(lightQueue);
+            lightQueue = nullptr;
+            triggerSafetyFault("headlight task allocation", ESP_ERR_NO_MEM);
+        }
+    }
+
     telemetryQueue = xQueueCreate(1, sizeof(TelemetrySnapshot));
     if (telemetryQueue == nullptr) {
         ESP_LOGE(TAG, "Could not create telemetry queue; local control continues");
@@ -301,7 +392,6 @@ void controlTask(void *)
 
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastLog = lastWake;
-    bool pendingCrashEvent = false;
     bool crashEventLatched = false;
 
     for (;;) {
@@ -320,7 +410,6 @@ void controlTask(void *)
             lastTiltDegrees = tiltDegrees;
             if (crashDetected) {
                 if (!crashEventLatched) {
-                    pendingCrashEvent = true;
                     crashEventLatched = true;
                 }
                 triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
@@ -413,10 +502,8 @@ void controlTask(void *)
                 snapshot.dutyPermille = duty;
                 snapshot.relayOn = relayOn;
                 snapshot.state = state;
-                snapshot.crashEvent = pendingCrashEvent;
-                if (xQueueOverwrite(telemetryQueue, &snapshot) == pdPASS) {
-                    pendingCrashEvent = false;
-                }
+                snapshot.crashEvent = crashEventLatched;
+                xQueueOverwrite(telemetryQueue, &snapshot);
             }
             lastLog = now;
         }

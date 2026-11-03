@@ -27,7 +27,7 @@ constexpr float kBrightTurnOffLux = 60.0F;
 constexpr uint32_t kFaultBlinkHalfPeriodTicks = 12U;
 
 uint8_t sActiveBh1750Addr = DEMO_BH1750_ADDRESS;
-float sLastValidLux = 0.0F;
+float sLastValidLux = -1.0F;
 TickType_t sLastLuxReadTicks = 0;
 
 bool tryInitBh1750At(uint8_t addr)
