@@ -61,6 +61,7 @@ bool crashDetectorReadyForTelemetry = false;
 bool powerMonitorReadyForTelemetry = false;
 bool gpsTrackerReadyForTelemetry = false;
 bool dataLoggerReadyForTelemetry = false;
+bool headlightReadyForTelemetry = false;
 
 const char *phaseName(ControlState state)
 {
@@ -78,10 +79,22 @@ void telemetryTask(void *)
 {
     PowerReading powerReading = {};
     GpsFix gpsFix = {};
+    ControlState currentState = ControlState::Locked;
+    float ambientLux = -1.0F;
+    uint32_t lightDuty = 0;
 
     for (;;) {
         TelemetrySnapshot snapshot = {};
-        if (xQueueReceive(telemetryQueue, &snapshot, portMAX_DELAY) != pdPASS) {
+        const BaseType_t received = xQueueReceive(
+            telemetryQueue, &snapshot, pdMS_TO_TICKS(100));
+        if (received == pdPASS) {
+            currentState = snapshot.state;
+        }
+        if (headlightReadyForTelemetry) {
+            headlight.updateAutoHeadlight(
+                currentState == ControlState::Fault, &ambientLux, &lightDuty);
+        }
+        if (received != pdPASS) {
             continue;
         }
 
@@ -115,6 +128,11 @@ void telemetryTask(void *)
                  static_cast<unsigned long>(snapshot.throttlePercent),
                  snapshot.relayOn ? "ON" : "OFF",
                  static_cast<double>(snapshot.dutyPermille / 10.0F));
+        ESP_LOGI(TAG, "headlight=%s | ambient=%.1f lux | duty=%lu%%",
+             snapshot.state == ControlState::Fault ? "FAULT BLINK" :
+             (lightDuty > 0U ? "ON" : "OFF"),
+             static_cast<double>(ambientLux),
+             static_cast<unsigned long>(lightDuty));
 
         const char *eepromStatus = !dataLoggerReadyForTelemetry ? "No-EEPROM"
                                                                 : (eepromWriteOk ? "EEPROM-OK" : "EEPROM-ERR");
@@ -178,7 +196,6 @@ void controlTask(void *)
     bool stopTiming = false;
     uint32_t duty = 0;
     float filteredThrottle = 0.0F;
-    uint32_t lightDuty = 0;
     uint32_t mpuFailStreak = 0;
     float lastTiltDegrees = 0.0F;
 
@@ -223,6 +240,7 @@ void controlTask(void *)
 
     esp_err_t err = headlight.initialize();
     const bool headlightReady = (err == ESP_OK);
+    headlightReadyForTelemetry = headlightReady;
     if (!headlightReady) {
         ESP_LOGW(TAG, "Headlight init failed: %s", esp_err_to_name(err));
     }
@@ -284,11 +302,11 @@ void controlTask(void *)
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastLog = lastWake;
     bool pendingCrashEvent = false;
+    bool crashEventLatched = false;
 
     for (;;) {
         const TickType_t now = xTaskGetTickCount();
         float tiltDegrees = lastTiltDegrees;
-        float ambientLux = -1.0F;
         bool crashDetected = false;
 
         err = crashDetector.update(&tiltDegrees, &crashDetected);
@@ -301,6 +319,10 @@ void controlTask(void *)
             mpuFailStreak = 0;
             lastTiltDegrees = tiltDegrees;
             if (crashDetected) {
+                if (!crashEventLatched) {
+                    pendingCrashEvent = true;
+                    crashEventLatched = true;
+                }
                 triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
             }
         }
@@ -379,20 +401,6 @@ void controlTask(void *)
             }
         }
 
-        if (headlightReady) {
-            const float limitedTilt = (tiltDegrees < kMaximumDimmingTiltDegrees)
-                                          ? tiltDegrees
-                                          : kMaximumDimmingTiltDegrees;
-            const uint32_t targetLightDuty = static_cast<uint32_t>(
-                100.0F - ((limitedTilt / kMaximumDimmingTiltDegrees) * 60.0F));
-            if (lightDuty < targetLightDuty) {
-                lightDuty += (targetLightDuty - lightDuty > 2U) ? 2U : (targetLightDuty - lightDuty);
-            } else if (lightDuty > targetLightDuty) {
-                lightDuty -= (lightDuty - targetLightDuty > 2U) ? 2U : (lightDuty - targetLightDuty);
-            }
-            headlight.setBrightnessPercent(state == ControlState::Fault ? 0U : lightDuty);
-        }
-
         // D. Chu kỳ 1 giây: gửi ảnh chụp trạng thái sang task telemetry.
         if (static_cast<TickType_t>(now - lastLog) >= pdMS_TO_TICKS(kTelemetryPeriodMs)) {
             if (telemetryQueue != nullptr) {
@@ -410,68 +418,6 @@ void controlTask(void *)
                     pendingCrashEvent = false;
                 }
             }
-
-            if (gpsTrackerReady) {
-                err = gpsTracker.readFix(&gpsFix);
-                if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
-                    gpsFix = {};
-                }
-            }
-
-            TelemetryRecord record = {};
-            record.uptimeMilliseconds = static_cast<uint32_t>(now * portTICK_PERIOD_MS);
-            record.tiltDegrees = tiltDegrees;
-            record.throttlePercent = static_cast<uint32_t>((filteredThrottle / 10.0F) + 0.5F);
-            record.busVoltageVolts = powerReading.busVoltageVolts;
-            record.currentMilliamps = powerReading.currentMilliamps;
-            record.gps = gpsFix;
-
-            bool eepromWriteOk = false;
-            if (dataLoggerReady) {
-                eepromWriteOk = (dataLogger.append(record) == ESP_OK);
-            }
-
-            const char *phase = state == State::Locked ? "LOCKED" :
-                                state == State::Ready ? "READY" :
-                                state == State::RelaySettling ? "RELAY_WAIT" :
-                                state == State::Running ? "RUNNING" : "FAULT_LOCKED";
-
-            const char *eepromStatus = !dataLoggerReady ? "No-EEPROM"
-                                                        : (eepromWriteOk ? "EEPROM-OK" : "EEPROM-ERR");
-
-            const char *lightStatus = (state == State::Fault) ? "HAZARD_BLINK" :
-                                      (lightDuty > 0U)        ? "ON (Dark)" : "OFF (Bright)";
-
-            ESP_LOGI(TAG, "------------------------------------------------------------");
-            ESP_LOGI(TAG, "[1. MOTOR]     Phase: %s | Throttle: %lu%% (ADC=%d) | Relay: %s | PWM: %.1f%%",
-                     phase, static_cast<unsigned long>(throttle), raw,
-                     relayOn ? "ON" : "OFF", static_cast<double>(duty / 10.0F));
-
-            ESP_LOGI(TAG, "[2. MPU6050]   Tilt: %.1f deg | Crash Status: %s",
-                     static_cast<double>(tiltDegrees),
-                     (state == State::Fault) ? "CRASHED / FAULT!" : "NORMAL");
-
-            ESP_LOGI(TAG, "[3. BH1750]    Lux: %.1f lux | Headlight: %s (Duty=%lu%%)",
-                     static_cast<double>(ambientLux), lightStatus, static_cast<unsigned long>(lightDuty));
-
-            ESP_LOGI(TAG, "[4. INA226]    Bus Voltage: %.2f V | Current: %.0f mA",
-                     static_cast<double>(record.busVoltageVolts),
-                     static_cast<double>(record.currentMilliamps));
-
-            if (record.gps.valid) {
-                ESP_LOGI(TAG, "[5. NEO-6M]    Fix: VALID (Sat=%lu) | Lat: %.6f | Lon: %.6f | Speed: %.1f m/s",
-                         static_cast<unsigned long>(record.gps.satellitesInView),
-                         record.gps.latitudeDegrees, record.gps.longitudeDegrees,
-                         static_cast<double>(record.gps.speedMetersPerSecond));
-            } else {
-                ESP_LOGI(TAG, "[5. NEO-6M]    Fix: NO-FIX | Satellites in view: %lu",
-                         static_cast<unsigned long>(record.gps.satellitesInView));
-            }
-
-            ESP_LOGI(TAG, "[6. AT24C256]  Status: %s | Uptime: %lu ms",
-                     eepromStatus, static_cast<unsigned long>(record.uptimeMilliseconds));
-            ESP_LOGI(TAG, "============================================================\n");
-
             lastLog = now;
         }
 
