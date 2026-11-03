@@ -1,4 +1,4 @@
-#include <cmath>
+﻿#include <cmath>
 #include <cstdio>
 #include <cstdint>
 
@@ -17,7 +17,6 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
-// Dự phòng nếu BoardConfig.h chưa định nghĩa ngưỡng ADC của tay ga
 #ifndef DEMO_THROTTLE_ADC_MIN
 #define DEMO_THROTTLE_ADC_MIN 0
 #endif
@@ -28,11 +27,11 @@
 namespace {
 
 constexpr char TAG[] = "vehicle_system";
-constexpr uint32_t kControlPeriodMs = 20;        // Chu kỳ 20ms (50Hz) giúp băm xung động cơ mượt
-constexpr uint32_t kTelemetryPeriodMs = 1000;    // Chu kỳ ghi Hộp đen & đọc GPS (1Hz)
-constexpr uint32_t kZeroThrottle = 2;            // Ngưỡng chết chống nhiễu ADC tay ga ở mức 0
-constexpr uint32_t kStartThrottle = 5;           // Ngưỡng bắt đầu đóng Relay chạy động cơ
-constexpr float kMaximumDimmingTiltDegrees = 60.0F;
+constexpr uint32_t kControlPeriodMs = 20;
+constexpr uint32_t kTelemetryPeriodMs = 1000;
+constexpr uint32_t kZeroThrottle = 2;
+constexpr uint32_t kStartThrottle = 5;
+constexpr bool kInvertThrottleDirection = true;
 
 enum class ControlState { Locked, Ready, RelaySettling, Running, Fault };
 
@@ -62,6 +61,7 @@ bool crashDetectorReadyForTelemetry = false;
 bool powerMonitorReadyForTelemetry = false;
 bool gpsTrackerReadyForTelemetry = false;
 bool dataLoggerReadyForTelemetry = false;
+bool headlightReadyForTelemetry = false;
 
 const char *phaseName(ControlState state)
 {
@@ -79,10 +79,22 @@ void telemetryTask(void *)
 {
     PowerReading powerReading = {};
     GpsFix gpsFix = {};
+    ControlState currentState = ControlState::Locked;
+    float ambientLux = -1.0F;
+    uint32_t lightDuty = 0;
 
     for (;;) {
         TelemetrySnapshot snapshot = {};
-        if (xQueueReceive(telemetryQueue, &snapshot, portMAX_DELAY) != pdPASS) {
+        const BaseType_t received = xQueueReceive(
+            telemetryQueue, &snapshot, pdMS_TO_TICKS(100));
+        if (received == pdPASS) {
+            currentState = snapshot.state;
+        }
+        if (headlightReadyForTelemetry) {
+            headlight.updateAutoHeadlight(
+                currentState == ControlState::Fault, &ambientLux, &lightDuty);
+        }
+        if (received != pdPASS) {
             continue;
         }
 
@@ -116,6 +128,11 @@ void telemetryTask(void *)
                  static_cast<unsigned long>(snapshot.throttlePercent),
                  snapshot.relayOn ? "ON" : "OFF",
                  static_cast<double>(snapshot.dutyPermille / 10.0F));
+        ESP_LOGI(TAG, "headlight=%s | ambient=%.1f lux | duty=%lu%%",
+             snapshot.state == ControlState::Fault ? "FAULT BLINK" :
+             (lightDuty > 0U ? "ON" : "OFF"),
+             static_cast<double>(ambientLux),
+             static_cast<unsigned long>(lightDuty));
 
         const char *eepromStatus = !dataLoggerReadyForTelemetry ? "No-EEPROM"
                                                                 : (eepromWriteOk ? "EEPROM-OK" : "EEPROM-ERR");
@@ -159,7 +176,6 @@ void telemetryTask(void *)
     }
 }
 
-// Thuật toán tăng/giảm tốc mềm (Ramp Duty) tính theo phần nghìn (0..1000) của bạn Hùng
 uint32_t rampDuty(uint32_t current, uint32_t target)
 {
     if (target > 1000U) target = 1000U;
@@ -178,16 +194,15 @@ void controlTask(void *)
     bool zeroTiming = false;
     bool relayOn = false;
     bool stopTiming = false;
-    uint32_t duty = 0;               // Đơn vị phần nghìn (0..1000)
-    float filteredThrottle = 0.0F;   // Đơn vị phần nghìn (0.0..1000.0)
-    uint32_t lightDuty = 0;          // Độ sáng đèn pha (0..100%)
+    uint32_t duty = 0;
+    float filteredThrottle = 0.0F;
+    uint32_t mpuFailStreak = 0;
+    float lastTiltDegrees = 0.0F;
 
     TickType_t zeroSince = 0;
     TickType_t relaySince = 0;
     TickType_t stopSince = 0;
 
-    // Hàm khóa an toàn: Ngắt động cơ & đèn pha ngay lập tức nhưng KHÔNG làm treo CPU
-    // để Hộp đen (DataLogger) vẫn tiếp tục ghi lại hiện trường tai nạn.
     auto triggerSafetyFault = [&](const char *operation, esp_err_t cause) {
         if (state == ControlState::Fault) {
             return;
@@ -199,7 +214,6 @@ void controlTask(void *)
 
         const esp_err_t pwmErr = motor.setMotorDutyPercent(0);
         const esp_err_t relayErr = motor.setMotorPowerEnabled(false);
-        headlight.setBrightnessPercent(0);
 
         ESP_LOGE(TAG, "SAFETY FAULT [%s]: %s | Stop PWM=%s, Relay=%s | RESET required!",
                  operation, esp_err_to_name(cause),
@@ -212,7 +226,8 @@ void controlTask(void *)
         }
     };
 
-    // 1. Khởi tạo Khối Chấp hành
+    BoardI2c::getMutex();
+
     requireOk(motor.initialize(), "motor init");
     requireOk(motor.setMotorDutyPercent(0), "initial PWM zero");
     requireOk(motor.setMotorPowerEnabled(false), "initial relay OFF");
@@ -225,11 +240,11 @@ void controlTask(void *)
 
     esp_err_t err = headlight.initialize();
     const bool headlightReady = (err == ESP_OK);
+    headlightReadyForTelemetry = headlightReady;
     if (!headlightReady) {
         ESP_LOGW(TAG, "Headlight init failed: %s", esp_err_to_name(err));
     }
 
-    // 2. Khởi tạo 3 Module Cảm biến & Hộp đen của bạn (+ INA226)
     err = crashDetector.initialize();
     const bool crashDetectorReady = (err == ESP_OK) && crashDetector.isAvailable();
     if (!crashDetectorReady) {
@@ -287,30 +302,42 @@ void controlTask(void *)
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastLog = lastWake;
     bool pendingCrashEvent = false;
+    bool crashEventLatched = false;
 
     for (;;) {
         const TickType_t now = xTaskGetTickCount();
-        float tiltDegrees = 0.0F;
+        float tiltDegrees = lastTiltDegrees;
         bool crashDetected = false;
 
-        // A. Kiểm tra góc nghiêng & phát hiện ngã xe (CrashDetector)
-        if (crashDetectorReady) {
-            err = crashDetector.update(&tiltDegrees, &crashDetected);
-            if (err != ESP_OK) {
+        err = crashDetector.update(&tiltDegrees, &crashDetected);
+        if (err != ESP_OK) {
+            mpuFailStreak++;
+            if (mpuFailStreak >= 10U) { // Cho phep bo qua nhieu ngan han tren bus I2C (<200ms)
                 triggerSafetyFault("MPU6050 read failed", err);
-            } else if (crashDetected && state != ControlState::Fault) {
+            }
+        } else {
+            mpuFailStreak = 0;
+            lastTiltDegrees = tiltDegrees;
+            if (crashDetected) {
+                if (!crashEventLatched) {
+                    pendingCrashEvent = true;
+                    crashEventLatched = true;
+                }
                 triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
-                pendingCrashEvent = true;
             }
         }
 
-        // B. Đọc tay ga & Điều khiển Động cơ theo máy trạng thái của bạn Hùng
         int raw = 0;
         uint32_t throttle = 0;
         err = motor.readThrottlePercent(&throttle, &raw);
         if (err != ESP_OK) {
             triggerSafetyFault("throttle ADC", err);
             throttle = 0;
+        } else if (kInvertThrottleDirection) {
+            throttle = (throttle <= 100U) ? (100U - throttle) : 0U;
+            int bounded = raw < DEMO_THROTTLE_ADC_MIN ? DEMO_THROTTLE_ADC_MIN :
+                          raw > DEMO_THROTTLE_ADC_MAX ? DEMO_THROTTLE_ADC_MAX : raw;
+            raw = DEMO_THROTTLE_ADC_MAX - (bounded - DEMO_THROTTLE_ADC_MIN);
         }
 
         if (state != ControlState::Fault) {
@@ -331,8 +358,6 @@ void controlTask(void *)
                     }
                     zeroTiming = false;
                     stopTiming = false;
-                    ESP_LOGI(TAG, "STOP -> READY: throttle <=2%% for 200 ms; raw=%d throttle=%lu%%",
-                             raw, static_cast<unsigned long>(throttle));
                 }
                 if (state == ControlState::Locked) {
                     if (!zeroTiming) {
@@ -374,21 +399,6 @@ void controlTask(void *)
                     }
                 }
             }
-        }
-
-        // C. Điều khiển Đèn pha thích ứng theo góc nghiêng
-        if (headlightReady) {
-            const float limitedTilt = (tiltDegrees < kMaximumDimmingTiltDegrees)
-                                          ? tiltDegrees
-                                          : kMaximumDimmingTiltDegrees;
-            const uint32_t targetLightDuty = static_cast<uint32_t>(
-                100.0F - ((limitedTilt / kMaximumDimmingTiltDegrees) * 60.0F));
-            if (lightDuty < targetLightDuty) {
-                lightDuty += (targetLightDuty - lightDuty > 2U) ? 2U : (targetLightDuty - lightDuty);
-            } else if (lightDuty > targetLightDuty) {
-                lightDuty -= (lightDuty - targetLightDuty > 2U) ? 2U : (lightDuty - targetLightDuty);
-            }
-            headlight.setBrightnessPercent(state == ControlState::Fault ? 0U : lightDuty);
         }
 
         // D. Chu kỳ 1 giây: gửi ảnh chụp trạng thái sang task telemetry.
