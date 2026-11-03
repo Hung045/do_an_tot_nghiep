@@ -1,9 +1,5 @@
-<<<<<<< HEAD
 ﻿#include <cmath>
-=======
-#include <cmath>
 #include <cstdio>
->>>>>>> origin/main
 #include <cstdint>
 
 #include "BoardConfig.h"
@@ -37,8 +33,6 @@ constexpr uint32_t kZeroThrottle = 2;
 constexpr uint32_t kStartThrottle = 5;
 constexpr bool kInvertThrottleDirection = true;
 
-<<<<<<< HEAD
-=======
 enum class ControlState { Locked, Ready, RelaySettling, Running, Fault };
 
 struct TelemetrySnapshot {
@@ -54,7 +48,6 @@ struct TelemetrySnapshot {
 };
 
 // Khai báo toàn bộ các Module của cả nhóm
->>>>>>> origin/main
 CrashDetector crashDetector;
 DataLogger dataLogger;
 GpsTracker gpsTracker;
@@ -272,9 +265,6 @@ void controlTask(void *)
         }
     }
 
-<<<<<<< HEAD
-    ESP_LOGI(TAG, "SYSTEM READY: Return throttle <=2%% for 1s to ARM; >=5%% to run.");
-=======
     crashDetectorReadyForTelemetry = crashDetectorReady;
     powerMonitorReadyForTelemetry = powerMonitorReady;
     gpsTrackerReadyForTelemetry = gpsTrackerReady;
@@ -290,7 +280,6 @@ void controlTask(void *)
     }
 
     ESP_LOGI(TAG, "SYSTEM READY: Return throttle <=2%% for 1s to arm; start >=5%%.");
->>>>>>> origin/main
 
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastLog = lastWake;
@@ -302,7 +291,6 @@ void controlTask(void *)
         float ambientLux = -1.0F;
         bool crashDetected = false;
 
-<<<<<<< HEAD
         err = crashDetector.update(&tiltDegrees, &crashDetected);
         if (err != ESP_OK) {
             mpuFailStreak++;
@@ -314,16 +302,6 @@ void controlTask(void *)
             lastTiltDegrees = tiltDegrees;
             if (crashDetected) {
                 triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
-=======
-        // A. Kiểm tra góc nghiêng & phát hiện ngã xe (CrashDetector)
-        if (crashDetectorReady) {
-            err = crashDetector.update(&tiltDegrees, &crashDetected);
-            if (err != ESP_OK) {
-                triggerSafetyFault("MPU6050 read failed", err);
-            } else if (crashDetected && state != ControlState::Fault) {
-                triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
-                pendingCrashEvent = true;
->>>>>>> origin/main
             }
         }
 
@@ -365,13 +343,8 @@ void controlTask(void *)
                         zeroTiming = true;
                     }
                     if (static_cast<TickType_t>(now - zeroSince) >= zeroHold) {
-<<<<<<< HEAD
-                        state = State::Ready;
-                        ESP_LOGI(TAG, "ARMED: Motor ready.");
-=======
                         state = ControlState::Ready;
                         ESP_LOGI(TAG, "ARMED: throttle may now start motor.");
->>>>>>> origin/main
                     }
                 }
             } else {
@@ -407,11 +380,6 @@ void controlTask(void *)
         }
 
         if (headlightReady) {
-<<<<<<< HEAD
-            headlight.updateAutoHeadlight(state == State::Fault, &ambientLux, &lightDuty);
-        }
-
-=======
             const float limitedTilt = (tiltDegrees < kMaximumDimmingTiltDegrees)
                                           ? tiltDegrees
                                           : kMaximumDimmingTiltDegrees;
@@ -426,7 +394,6 @@ void controlTask(void *)
         }
 
         // D. Chu kỳ 1 giây: gửi ảnh chụp trạng thái sang task telemetry.
->>>>>>> origin/main
         if (static_cast<TickType_t>(now - lastLog) >= pdMS_TO_TICKS(kTelemetryPeriodMs)) {
             if (telemetryQueue != nullptr) {
                 TelemetrySnapshot snapshot = {};
@@ -443,7 +410,6 @@ void controlTask(void *)
                     pendingCrashEvent = false;
                 }
             }
-<<<<<<< HEAD
 
             if (gpsTrackerReady) {
                 err = gpsTracker.readFix(&gpsFix);
@@ -506,8 +472,6 @@ void controlTask(void *)
                      eepromStatus, static_cast<unsigned long>(record.uptimeMilliseconds));
             ESP_LOGI(TAG, "============================================================\n");
 
-=======
->>>>>>> origin/main
             lastLog = now;
         }
 
