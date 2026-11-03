@@ -1,4 +1,4 @@
-#include <cmath>
+﻿#include <cmath>
 #include <cstdint>
 
 #include "BoardConfig.h"
@@ -13,7 +13,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// Dự phòng nếu BoardConfig.h chưa định nghĩa ngưỡng ADC của tay ga
 #ifndef DEMO_THROTTLE_ADC_MIN
 #define DEMO_THROTTLE_ADC_MIN 0
 #endif
@@ -24,13 +23,12 @@
 namespace {
 
 constexpr char TAG[] = "vehicle_system";
-constexpr uint32_t kControlPeriodMs = 20;        // Chu kỳ 20ms (50Hz) giúp băm xung động cơ mượt
-constexpr uint32_t kTelemetryPeriodMs = 1000;    // Chu kỳ ghi Hộp đen & đọc GPS (1Hz)
-constexpr uint32_t kZeroThrottle = 2;            // Ngưỡng chết chống nhiễu ADC tay ga ở mức 0
-constexpr uint32_t kStartThrottle = 5;           // Ngưỡng bắt đầu đóng Relay chạy động cơ
-constexpr float kMaximumDimmingTiltDegrees = 60.0F;
+constexpr uint32_t kControlPeriodMs = 20;
+constexpr uint32_t kTelemetryPeriodMs = 1000;
+constexpr uint32_t kZeroThrottle = 2;
+constexpr uint32_t kStartThrottle = 5;
+constexpr bool kInvertThrottleDirection = true;
 
-// Khai báo toàn bộ các Module của cả nhóm
 CrashDetector crashDetector;
 DataLogger dataLogger;
 GpsTracker gpsTracker;
@@ -38,7 +36,6 @@ MotorController motor;
 HeadlightController headlight;
 PowerMonitor powerMonitor;
 
-// Thuật toán tăng/giảm tốc mềm (Ramp Duty) tính theo phần nghìn (0..1000) của bạn Hùng
 uint32_t rampDuty(uint32_t current, uint32_t target)
 {
     if (target > 1000U) target = 1000U;
@@ -58,16 +55,16 @@ void controlTask(void *)
     bool zeroTiming = false;
     bool relayOn = false;
     bool stopTiming = false;
-    uint32_t duty = 0;               // Đơn vị phần nghìn (0..1000)
-    float filteredThrottle = 0.0F;   // Đơn vị phần nghìn (0.0..1000.0)
-    uint32_t lightDuty = 0;          // Độ sáng đèn pha (0..100%)
+    uint32_t duty = 0;
+    float filteredThrottle = 0.0F;
+    uint32_t lightDuty = 0;
+    uint32_t mpuFailStreak = 0;
+    float lastTiltDegrees = 0.0F;
 
     TickType_t zeroSince = 0;
     TickType_t relaySince = 0;
     TickType_t stopSince = 0;
 
-    // Hàm khóa an toàn: Ngắt động cơ & đèn pha ngay lập tức nhưng KHÔNG làm treo CPU
-    // để Hộp đen (DataLogger) vẫn tiếp tục ghi lại hiện trường tai nạn.
     auto triggerSafetyFault = [&](const char *operation, esp_err_t cause) {
         if (state == State::Fault) {
             return;
@@ -79,7 +76,6 @@ void controlTask(void *)
 
         const esp_err_t pwmErr = motor.setMotorDutyPercent(0);
         const esp_err_t relayErr = motor.setMotorPowerEnabled(false);
-        headlight.setBrightnessPercent(0);
 
         ESP_LOGE(TAG, "SAFETY FAULT [%s]: %s | Stop PWM=%s, Relay=%s | RESET required!",
                  operation, esp_err_to_name(cause),
@@ -92,7 +88,8 @@ void controlTask(void *)
         }
     };
 
-    // 1. Khởi tạo Khối Chấp hành
+    BoardI2c::getMutex();
+
     requireOk(motor.initialize(), "motor init");
     requireOk(motor.setMotorDutyPercent(0), "initial PWM zero");
     requireOk(motor.setMotorPowerEnabled(false), "initial relay OFF");
@@ -103,7 +100,6 @@ void controlTask(void *)
         ESP_LOGW(TAG, "Headlight init failed: %s", esp_err_to_name(err));
     }
 
-    // 2. Khởi tạo 3 Module Cảm biến & Hộp đen của bạn (+ INA226)
     err = crashDetector.initialize();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "MPU6050 unavailable: %s", esp_err_to_name(err));
@@ -136,7 +132,7 @@ void controlTask(void *)
         }
     }
 
-    ESP_LOGI(TAG, "SYSTEM READY: Return throttle <=2%% for 1s to arm; start >=5%%.");
+    ESP_LOGI(TAG, "SYSTEM READY: Return throttle <=2%% for 1s to ARM; >=5%% to run.");
 
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastLog = lastWake;
@@ -145,24 +141,35 @@ void controlTask(void *)
 
     for (;;) {
         const TickType_t now = xTaskGetTickCount();
-        float tiltDegrees = 0.0F;
+        float tiltDegrees = lastTiltDegrees;
+        float ambientLux = -1.0F;
         bool crashDetected = false;
 
-        // A. Kiểm tra góc nghiêng & phát hiện ngã xe (CrashDetector)
         err = crashDetector.update(&tiltDegrees, &crashDetected);
         if (err != ESP_OK) {
-            triggerSafetyFault("MPU6050 read failed", err);
-        } else if (crashDetected) {
-            triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
+            mpuFailStreak++;
+            if (mpuFailStreak >= 10U) { // Cho phep bo qua nhieu ngan han tren bus I2C (<200ms)
+                triggerSafetyFault("MPU6050 read failed", err);
+            }
+        } else {
+            mpuFailStreak = 0;
+            lastTiltDegrees = tiltDegrees;
+            if (crashDetected) {
+                triggerSafetyFault("Crash detected (Tilt >= 60 deg)", ESP_ERR_INVALID_STATE);
+            }
         }
 
-        // B. Đọc tay ga & Điều khiển Động cơ theo máy trạng thái của bạn Hùng
         int raw = 0;
         uint32_t throttle = 0;
         err = motor.readThrottlePercent(&throttle, &raw);
         if (err != ESP_OK) {
             triggerSafetyFault("throttle ADC", err);
             throttle = 0;
+        } else if (kInvertThrottleDirection) {
+            throttle = (throttle <= 100U) ? (100U - throttle) : 0U;
+            int bounded = raw < DEMO_THROTTLE_ADC_MIN ? DEMO_THROTTLE_ADC_MIN :
+                          raw > DEMO_THROTTLE_ADC_MAX ? DEMO_THROTTLE_ADC_MAX : raw;
+            raw = DEMO_THROTTLE_ADC_MAX - (bounded - DEMO_THROTTLE_ADC_MIN);
         }
 
         if (state != State::Fault) {
@@ -183,8 +190,6 @@ void controlTask(void *)
                     }
                     zeroTiming = false;
                     stopTiming = false;
-                    ESP_LOGI(TAG, "STOP -> READY: throttle <=2%% for 200 ms; raw=%d throttle=%lu%%",
-                             raw, static_cast<unsigned long>(throttle));
                 }
                 if (state == State::Locked) {
                     if (!zeroTiming) {
@@ -193,7 +198,7 @@ void controlTask(void *)
                     }
                     if (static_cast<TickType_t>(now - zeroSince) >= zeroHold) {
                         state = State::Ready;
-                        ESP_LOGI(TAG, "ARMED: throttle may now start motor.");
+                        ESP_LOGI(TAG, "ARMED: Motor ready.");
                     }
                 }
             } else {
@@ -228,22 +233,10 @@ void controlTask(void *)
             }
         }
 
-        // C. Điều khiển Đèn pha thích ứng theo góc nghiêng
         if (headlightReady) {
-            const float limitedTilt = (tiltDegrees < kMaximumDimmingTiltDegrees)
-                                          ? tiltDegrees
-                                          : kMaximumDimmingTiltDegrees;
-            const uint32_t targetLightDuty = static_cast<uint32_t>(
-                100.0F - ((limitedTilt / kMaximumDimmingTiltDegrees) * 60.0F));
-            if (lightDuty < targetLightDuty) {
-                lightDuty += (targetLightDuty - lightDuty > 2U) ? 2U : (targetLightDuty - lightDuty);
-            } else if (lightDuty > targetLightDuty) {
-                lightDuty -= (lightDuty - targetLightDuty > 2U) ? 2U : (lightDuty - targetLightDuty);
-            }
-            headlight.setBrightnessPercent(state == State::Fault ? 0U : lightDuty);
+            headlight.updateAutoHeadlight(state == State::Fault, &ambientLux, &lightDuty);
         }
 
-        // D. Chu kỳ 1 giây: Đọc GPS, INA226, Lưu Hộp đen EEPROM và In Log tổng hợp
         if (static_cast<TickType_t>(now - lastLog) >= pdMS_TO_TICKS(kTelemetryPeriodMs)) {
             if (powerMonitorReady) {
                 if (powerMonitor.read(&powerReading) != ESP_OK) {
@@ -276,30 +269,41 @@ void controlTask(void *)
                                 state == State::RelaySettling ? "RELAY_WAIT" :
                                 state == State::Running ? "RUNNING" : "FAULT_LOCKED";
 
-            ESP_LOGI(TAG, "phase=%s | tilt=%.1f deg | throttle=%lu%% | relay=%s | pwm=%.1f%%",
-                     phase, static_cast<double>(tiltDegrees),
-                     static_cast<unsigned long>(throttle),
-                     relayOn ? "ON" : "OFF",
-                     static_cast<double>(duty / 10.0F));
-
             const char *eepromStatus = !dataLoggerReady ? "No-EEPROM"
                                                         : (eepromWriteOk ? "EEPROM-OK" : "EEPROM-ERR");
+
+            const char *lightStatus = (state == State::Fault) ? "HAZARD_BLINK" :
+                                      (lightDuty > 0U)        ? "ON (Dark)" : "OFF (Bright)";
+
+            ESP_LOGI(TAG, "------------------------------------------------------------");
+            ESP_LOGI(TAG, "[1. MOTOR]     Phase: %s | Throttle: %lu%% (ADC=%d) | Relay: %s | PWM: %.1f%%",
+                     phase, static_cast<unsigned long>(throttle), raw,
+                     relayOn ? "ON" : "OFF", static_cast<double>(duty / 10.0F));
+
+            ESP_LOGI(TAG, "[2. MPU6050]   Tilt: %.1f deg | Crash Status: %s",
+                     static_cast<double>(tiltDegrees),
+                     (state == State::Fault) ? "CRASHED / FAULT!" : "NORMAL");
+
+            ESP_LOGI(TAG, "[3. BH1750]    Lux: %.1f lux | Headlight: %s (Duty=%lu%%)",
+                     static_cast<double>(ambientLux), lightStatus, static_cast<unsigned long>(lightDuty));
+
+            ESP_LOGI(TAG, "[4. INA226]    Bus Voltage: %.2f V | Current: %.0f mA",
+                     static_cast<double>(record.busVoltageVolts),
+                     static_cast<double>(record.currentMilliamps));
+
             if (record.gps.valid) {
-                ESP_LOGI(TAG, "telemetry=[%s] %.2fV, %.0fmA | GPS=VALID (Sat=%lu, Lat=%.6f, Lon=%.6f, Spd=%.1fm/s)",
-                         eepromStatus,
-                         static_cast<double>(record.busVoltageVolts),
-                         static_cast<double>(record.currentMilliamps),
+                ESP_LOGI(TAG, "[5. NEO-6M]    Fix: VALID (Sat=%lu) | Lat: %.6f | Lon: %.6f | Speed: %.1f m/s",
                          static_cast<unsigned long>(record.gps.satellitesInView),
-                         record.gps.latitudeDegrees,
-                         record.gps.longitudeDegrees,
+                         record.gps.latitudeDegrees, record.gps.longitudeDegrees,
                          static_cast<double>(record.gps.speedMetersPerSecond));
             } else {
-                ESP_LOGI(TAG, "telemetry=[%s] %.2fV, %.0fmA | GPS=NO-FIX (Sat=%lu)",
-                         eepromStatus,
-                         static_cast<double>(record.busVoltageVolts),
-                         static_cast<double>(record.currentMilliamps),
+                ESP_LOGI(TAG, "[5. NEO-6M]    Fix: NO-FIX | Satellites in view: %lu",
                          static_cast<unsigned long>(record.gps.satellitesInView));
             }
+
+            ESP_LOGI(TAG, "[6. AT24C256]  Status: %s | Uptime: %lu ms",
+                     eepromStatus, static_cast<unsigned long>(record.uptimeMilliseconds));
+            ESP_LOGI(TAG, "============================================================\n");
 
             lastLog = now;
         }

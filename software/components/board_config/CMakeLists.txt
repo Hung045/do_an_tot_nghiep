@@ -1,2 +1,5 @@
-idf_component_register(INCLUDE_DIRS "include"
-                       REQUIRES driver esp_adc)
+idf_component_register(
+    SRCS "BoardConfig.cpp"
+    INCLUDE_DIRS "include"
+    REQUIRES driver freertos
+)
