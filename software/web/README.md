@@ -1,5 +1,18 @@
 # Web theo dõi ESP32
 
+Giao diện chính gồm trạng thái xe, mức điều khiển PWM/tay ga, góc nghiêng,
+GPS, bản đồ và sự kiện gần nhất. Mở **Chi tiết kỹ thuật** để xem ADC,
+relay, bộ lọc, trạng thái module, biểu đồ và JSON MQTT. PWM là duty lệnh,
+không phải công suất điện đo được. Trạng thái đèn chưa được gửi qua MQTT.
+
+Bản đồ dùng Leaflet/OpenStreetMap và cần Internet để tải ảnh nền. Nút
+**Bám theo xe** cho phép dừng tự dịch chuyển bản đồ để xem vùng khác.
+Khi mất định vị hoặc không nhận telemetry cảm biến trong 5 giây, điểm GPS
+cũ được làm mờ và có thông báo. Đường nối giữ tối đa 100 vị trí nhận gần
+nhất trong phiên mở trang; dao động GPS khi đứng yên cũng có thể tạo đường.
+Sau khi cập nhật các file web, nhấn Ctrl+F5 trong trình duyệt; không cần
+nạp lại firmware cho thay đổi giao diện này.
+
 Giao diện chỉ đọc dữ liệu thật từ `vehicle/motor`, `vehicle/telemetry` và
 `vehicle/event`; không gửi lệnh điều
 khiển. Laptop chạy Mosquitto và web server; laptop và điện thoại có thể cùng

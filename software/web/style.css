@@ -146,6 +146,7 @@ button, meter { font: inherit; }
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 13px;
 }
+.metrics-grid-simple { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .metric-card, .panel {
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -173,6 +174,7 @@ button, meter { font: inherit; }
 .phase-value { font-size: 1.55rem; }
 .metric-footnote { display: block; margin-top: 8px; color: var(--muted); font-size: .68rem; }
 meter { display: block; width: 100%; height: 5px; margin-top: 11px; }
+.compact-meter { margin-top: 6px; opacity: .72; }
 meter::-webkit-meter-bar { border: 0; border-radius: 8px; background: #26354a; }
 meter::-webkit-meter-optimum-value { border-radius: 8px; background: var(--teal); }
 #pwm-meter::-webkit-meter-optimum-value { background: var(--blue); }
@@ -198,6 +200,75 @@ meter::-moz-meter-bar { border-radius: 8px; background: var(--teal); }
 .throttle-dot { background: var(--teal); }
 .pwm-dot { background: var(--blue); }
 .sample-count { color: var(--muted); font-size: .68rem; }
+
+.map-panel { margin-top: 15px; }
+.map-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.map-toolbar .map-status { margin: 10px 0; }
+#map-follow { border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; background: var(--surface-raised); color: var(--muted); cursor: pointer; font-size: .75rem; }
+#map-follow[aria-pressed="true"] { color: var(--teal); border-color: rgb(66 214 189 / 40%); }
+button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 4px; }
+.metric-card { min-width: 0; }
+.phase-value { font-size: clamp(1.05rem, 2vw, 1.45rem); overflow-wrap: anywhere; }
+body[data-phase="FAULT_LOCKED"] #phase { color: #ff939d; }
+body[data-phase="RUNNING"] #phase { color: var(--teal); }
+.event-summary.has-event { border-color: #f17682; }
+.event-summary.has-event #event-status { color: #ff939d; }
+.stale .metric-card:nth-child(-n+2) .metric-value,
+.sensors-stale .metric-card:nth-child(n+3) .metric-value { opacity: .5; }
+.gps-map { isolation: isolate; }
+.map-status { margin: 9px 0 13px; color: var(--muted); font-size: .75rem; }
+.map-external-link { color: var(--teal); font-size: .74rem; text-decoration: none; }
+.map-external-link:hover { text-decoration: underline; }
+.gps-map {
+  width: 100%;
+  height: 390px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #0b1220;
+}
+.leaflet-container { font-family: Inter, "Segoe UI", system-ui, sans-serif; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: #152236; color: #e6edf7; }
+.leaflet-control-attribution { font-size: 10px; }
+
+.event-summary { margin-top: 15px; }
+.event-summary .panel-heading > strong { color: #d7e1ee; font-size: .82rem; text-align: right; }
+.event-summary-details {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: .72rem;
+}
+
+.technical-panel { margin-top: 15px; }
+.technical-panel > summary, .nested-payload > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.technical-panel > summary::-webkit-details-marker,
+.nested-payload > summary::-webkit-details-marker { display: none; }
+.technical-panel > summary .eyebrow { display: block; margin-bottom: 5px; font-size: .58rem; }
+.technical-panel[open] > summary .details-chevron,
+.nested-payload[open] > summary .details-chevron { transform: rotate(180deg); }
+.technical-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, .85fr) minmax(0, 1.4fr);
+  gap: 26px;
+  margin-top: 18px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.technical-chart { min-width: 0; padding-top: 14px; }
+.nested-payload { margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--border); }
 
 .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; margin-top: 15px; }
 .system-panel, .payload-panel { min-width: 0; }
@@ -258,6 +329,7 @@ footer {
 @media (max-width: 760px) {
   .dashboard { padding: 22px 20px; }
   .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .technical-grid { grid-template-columns: 1fr; gap: 12px; }
 }
 
 @media (max-width: 560px) {
@@ -269,13 +341,15 @@ footer {
   .metrics-grid { gap: 9px; }
   .metric-card { min-height: 145px; padding: 14px 13px 12px; }
   .metric-value { font-size: 1.7rem; }
-  .phase-value { font-size: 1.3rem; }
+  .phase-value { font-size: 1.15rem; }
   .metric-heading h2 { font-size: .74rem; }
   .metric-footnote { font-size: .62rem; }
   .bottom-grid { grid-template-columns: 1fr; }
   .panel { padding: 16px 14px; }
+  .gps-map { height: 310px; }
   .chart-window { font-size: .64rem; }
   .chart-legend { gap: 12px; }
+  .event-summary-details { flex-direction: column; gap: 7px; }
   footer { flex-direction: column; align-items: flex-start; }
 }
 
