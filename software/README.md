@@ -81,8 +81,8 @@ driver when it is initialized. The current main integrates motor control,
 MPU6050 crash detection, GPS, AT24C256 logging, INA226 power measurement,
 headlight output, Wi-Fi, MQTT, and the local web dashboard.
 
-`main/main.cpp` starts with relay OFF and PWM zero. Hold throttle at 0-2%
-for one continuous second to arm, then raise it to at least 5% to start.
+`main/main.cpp` starts with relay OFF and PWM zero. Return throttle to 0-2%
+to arm on the next valid control sample, then raise it to at least 5% to start.
 The relay closes first; PWM starts after a 100 ms settling interval.
 PWM uses 0.1% command steps with the existing 10-bit LEDC timer. Raw ADC is
 mapped before rounding and smoothed with an EMA (alpha 0.2 per 20 ms).
@@ -125,7 +125,7 @@ if needed; do not connect its positive output to ESP32 3V3.
 Use a continuity meter on isolated COM-NO contacts: open when off, closed
 when on. Serial logs and a clicking sound alone do not verify the contacts.
 Flash and open Monitor. Verify high throttle at reset stays LOCKED/OFF/0%,
-low throttle for one second produces READY, and returning to low throttle
+one valid low-throttle sample produces READY, and returning to low throttle
 stops output. EN/RESET restarts the startup lock. Software cannot guarantee
 relay state before GPIO initialization; verify the hardware default state.
 
@@ -385,7 +385,7 @@ intentionally not shared. Each collaborator generates their own build and
   dedicated bus mutex. The first failure stops PWM/relay and enters `SENSOR_WAIT`.
   Three good readings spanning at least 40 ms are required to recover, within
   200 ms of the first failure. Recovery returns to `LOCKED`, requiring throttle
-  <=2% for one second; it never automatically resumes motor power.
+  <=2% on a valid control sample; it never automatically resumes motor power.
 - Failure to recover by the deadline latches `FAULT_LOCKED`. MPU reads then
   pause until reset, while lamp warning, servo centering and telemetry continue.
   Logs and motor MQTT payload include `fault_reason`. The read deadline is not

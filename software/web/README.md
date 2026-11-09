@@ -108,7 +108,7 @@ chưa có fix. Sau khi cập nhật web, nhấn Ctrl+F5.
 
 `vehicle/motor` có trạng thái `SENSOR_WAIT`: MPU đang lỗi/phục hồi và lệnh động cơ
 phải là relay OFF, PWM 0%. Nếu phục hồi ổn định trong 200 ms, hệ thống về `LOCKED`
-và yêu cầu tay ga <=2% trong 1 giây. Nếu quá hạn, hệ thống chốt `FAULT_LOCKED`,
+và yêu cầu đọc được tay ga <=2%, không cần giữ 1 giây. Nếu quá hạn, hệ thống chốt `FAULT_LOCKED`,
 ngừng đọc MPU đến khi reset và gửi `fault_reason` để web hiện nguyên nhân.
 Trong lúc khóa, `mpu_valid:false` không đồng nghĩa cảm biến đã hỏng; việc đọc
 đã tạm dừng có chủ đích. Không bỏ khóa để thử động cơ khi chưa xử lý nguyên nhân.

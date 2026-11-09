@@ -325,13 +325,11 @@ uint32_t rampDuty(uint32_t current, uint32_t target)
 
 void controlTask(void *)
 {
-    const TickType_t zeroHold = pdMS_TO_TICKS(1000);
     const TickType_t relaySettle = pdMS_TO_TICKS(100);
     const TickType_t stopDebounce = pdMS_TO_TICKS(200);
 
     ControlState state = ControlState::Locked;
 
-    bool zeroTiming = false;
     bool relayOn = false;
     bool stopTiming = false;
     uint32_t duty = 0;
@@ -340,7 +338,6 @@ void controlTask(void *)
     MpuHealth mpuHealth;
     const char *faultReason = "";
 
-    TickType_t zeroSince = 0;
     TickType_t relaySince = 0;
     TickType_t stopSince = 0;
 
@@ -460,7 +457,7 @@ void controlTask(void *)
         telemetryQueue = nullptr;
     }
 
-    ESP_LOGI(TAG, "CONTROL START: phase=%s; throttle <=2%% for 1s to arm; start >=5%%.", phaseName(state));
+    ESP_LOGI(TAG, "CONTROL START: phase=%s; throttle <=2%% to arm immediately; start >=5%%.", phaseName(state));
 
     TickType_t lastWake = xTaskGetTickCount();
     TickType_t lastLog = lastWake;
@@ -488,7 +485,7 @@ void controlTask(void *)
                     duty = 0;
                     relayOn = false;
                     filteredThrottle = 0;
-                    zeroTiming = stopTiming = false;
+                    stopTiming = false;
                     if (state != ControlState::Fault) state = ControlState::SensorWait;
                     ESP_LOGW(TAG, "MPU RECOVERING: motor stopped; require stable samples within 200 ms");
                 }
@@ -498,8 +495,8 @@ void controlTask(void *)
                 rollValid = false;
             } else if (state == ControlState::SensorWait) {
                 state = ControlState::Locked;
-                zeroTiming = stopTiming = false;
-                ESP_LOGI(TAG, "MPU RECOVERED: return throttle <=2%% for 1s to re-arm");
+                stopTiming = false;
+                ESP_LOGI(TAG, "MPU RECOVERED: return throttle <=2%% to re-arm immediately");
             }
         }
         if (err == ESP_OK) {
@@ -541,21 +538,13 @@ void controlTask(void *)
                     if (state != ControlState::Fault) {
                         state = ControlState::Ready;
                     }
-                    zeroTiming = false;
                     stopTiming = false;
                 }
                 if (state == ControlState::Locked) {
-                    if (!zeroTiming) {
-                        zeroSince = now;
-                        zeroTiming = true;
-                    }
-                    if (static_cast<TickType_t>(now - zeroSince) >= zeroHold) {
-                        state = ControlState::Ready;
-                        ESP_LOGI(TAG, "ARMED: throttle may now start motor.");
-                    }
+                    state = ControlState::Ready;
+                    ESP_LOGI(TAG, "ARMED: zero throttle detected; throttle may now start motor.");
                 }
             } else {
-                zeroTiming = false;
                 stopTiming = false;
                 const int boundedRaw = raw < DEMO_THROTTLE_ADC_MIN ? DEMO_THROTTLE_ADC_MIN :
                                        raw > DEMO_THROTTLE_ADC_MAX ? DEMO_THROTTLE_ADC_MAX : raw;
