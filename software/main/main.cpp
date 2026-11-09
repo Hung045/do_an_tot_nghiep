@@ -261,40 +261,41 @@ void telemetryTask(void *)
                  static_cast<double>(record.uptimeMilliseconds / 1000.0F), phase);
         if (snapshot.state == ControlState::Fault)
             ESP_LOGW(TAG, "LOCK REASON: %s | MPU reads paused; fix cause and RESET", snapshot.faultReason);
-        ESP_LOGI(TAG, "MOTOR   throttle=%3lu%% | filtered=%5.1f%% | PWM=%5.1f%% | relay=%s | ADC=%d",
+        ESP_LOGI(TAG, "MOTOR   throttle=%lu%% | PWM=%.1f%% | relay=%s",
                  static_cast<unsigned long>(snapshot.throttlePercent),
-                 static_cast<double>(snapshot.filteredThrottlePercent),
                  static_cast<double>(snapshot.dutyPermille / 10.0F),
-                 snapshot.relayOn ? "ON" : "OFF", snapshot.throttleRaw);
-        ESP_LOGI(TAG, "SENSORS MPU6050=%s (tilt=%5.1f deg) | BH1750=%s (lux=%6.1f) | light=%s %lu%%",
-                 !crashDetectorReadyForTelemetry ? "MISSING" : snapshot.state == ControlState::Fault ? "PAUSED_FAULT" :
-                 snapshot.rollValid ? "OK" : "RECOVERING",
-                 static_cast<double>(record.tiltDegrees),
-                 ambientLux >= 0.0F ? "OK" : "MISSING",
-                 static_cast<double>(ambientLux),
+                 snapshot.relayOn ? "ON" : "OFF");
+        if (crashDetectorReadyForTelemetry && snapshot.rollValid && snapshot.state != ControlState::Fault) {
+            ESP_LOGI(TAG, "MPU6050 OK | tilt=%.1f deg", static_cast<double>(record.tiltDegrees));
+        } else {
+            ESP_LOGI(TAG, "MPU6050 %s", !crashDetectorReadyForTelemetry ? "MISSING" :
+                     snapshot.state == ControlState::Fault ? "PAUSED_FAULT" : "RECOVERING");
+        }
+        if (std::isfinite(ambientLux) && ambientLux >= 0.0F) {
+            ESP_LOGI(TAG, "BH1750  OK | lux=%.1f", static_cast<double>(ambientLux));
+        } else {
+            ESP_LOGI(TAG, "BH1750  UNAVAILABLE");
+        }
+        ESP_LOGI(TAG, "LIGHT   %s | duty=%lu%%",
                  snapshot.state == ControlState::Fault ? "BLINK" :
                  (lightDuty > 0U ? "ON" : "OFF"),
                  static_cast<unsigned long>(lightDuty));
+        ESP_LOGI(TAG, "EEPROM  %s", eepromStatus);
         if (powerValid) {
-            ESP_LOGI(TAG, "STORAGE EEPROM=%s | INA226=OK (%.2f V, %.0f mA)",
-                     eepromStatus,
+            ESP_LOGI(TAG, "INA226  OK | %.2f V | %.0f mA",
                      static_cast<double>(record.busVoltageVolts),
                      static_cast<double>(record.currentMilliamps));
         } else if (powerMonitorReadyForTelemetry) {
-            ESP_LOGW(TAG, "STORAGE EEPROM=%s | INA226=READ_ERROR (%s) | voltage/current unavailable",
-                     eepromStatus, esp_err_to_name(powerErr));
+            ESP_LOGW(TAG, "INA226  READ_ERROR | %s", esp_err_to_name(powerErr));
         } else {
-            ESP_LOGI(TAG, "STORAGE EEPROM=%s | INA226=MISSING", eepromStatus);
+            ESP_LOGI(TAG, "INA226  MISSING");
         }
 
-        ESP_LOGI(TAG, "SERVO   %s | roll=%s %.1f deg | command=%.1f deg | target=%.1f deg (no position feedback)",
+        ESP_LOGI(TAG, "SERVO   %s | command=%.1f deg",
                  !snapshot.servoReady ? "UNAVAILABLE" : snapshot.servoTracking ? "TRACKING" : "CENTERING",
-                 snapshot.rollValid ? "OK" : "INVALID",
-                 static_cast<double>(snapshot.rollDegrees),
-                 static_cast<double>(snapshot.servoDegrees),
-                 static_cast<double>(snapshot.servoTargetDegrees));
+                 static_cast<double>(snapshot.servoDegrees));
 
-        ESP_LOGI(TAG, "GPS UART status=%s | RX=%lu B | NMEA_OK=%lu | rejected=%lu | rx_age=%ld ms | nmea_age=%ld ms",
+        ESP_LOGD(TAG, "GPS UART status=%s | RX=%lu B | NMEA_OK=%lu | rejected=%lu | rx_age=%ld ms | nmea_age=%ld ms",
                  gpsStatusName(gpsDiagnostics.status),
                  static_cast<unsigned long>(gpsDiagnostics.receivedBytes),
                  static_cast<unsigned long>(gpsDiagnostics.validSentences),
@@ -302,13 +303,12 @@ void telemetryTask(void *)
                  static_cast<long>(gpsDiagnostics.rxAgeMs),
                  static_cast<long>(gpsDiagnostics.nmeaAgeMs));
         if (record.gps.valid) {
-            ESP_LOGI(TAG, "GPS     FIX=YES | satellites=%lu | lat=%.6f | lon=%.6f | speed=%.2f m/s",
+            ESP_LOGI(TAG, "GPS     FIX | sat=%lu | lat=%.6f | lon=%.6f",
                      static_cast<unsigned long>(record.gps.satellitesInView),
                      record.gps.latitudeDegrees,
-                     record.gps.longitudeDegrees,
-                     static_cast<double>(record.gps.speedMetersPerSecond));
+                     record.gps.longitudeDegrees);
         } else {
-            ESP_LOGI(TAG, "GPS     FIX=NO  | satellites=%lu",
+            ESP_LOGI(TAG, "GPS     %s | sat=%lu", gpsStatusName(gpsDiagnostics.status),
                      static_cast<unsigned long>(record.gps.satellitesInView));
         }
 
