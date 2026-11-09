@@ -17,7 +17,7 @@ software/
     ├── board_config/            Shared default GPIO and peripheral settings
     ├── crash_detector/          MPU6050 tilt measurement and crash threshold
     ├── motor_controller/        Throttle ADC, motor PWM, and relay
-    ├── headlight_controller/    Headlight PWM output
+    ├── headlight_controller/    Headlight brightness and adaptive SG90 steering
     ├── power_monitor/           INA226 register driver and configurable shunt calibration
     ├── gps_tracker/             NEO-6M UART/NMEA RMC+GGA reader
     ├── data_logger/             AT24C256 CRC-protected circular telemetry log
@@ -26,8 +26,8 @@ software/
 ```
 
 Each hardware/feature component owns its `CMakeLists.txt`, public headers in
-`include/`, and implementation source. `board_config` and `project_types` are
-header-only shared components. Test modules directly from `main/main.cpp`;
+`include/`, and implementation source. `board_config` also initializes the two
+hardware I2C buses; `project_types` is header-only. Test modules directly from `main/main.cpp`;
 there are no separate example projects or selectable test modes.
 
 ## Current main: integrated vehicle test
@@ -37,9 +37,9 @@ priorities; ESP-IDF also runs its own Wi-Fi/MQTT tasks):
 
 | Task | Work | Timing / priority |
 | --- | --- | --- |
-| `vehicle_control` | MPU6050, throttle, safety lock, motor PWM and relay | target 20 ms / 5 |
+| `vehicle_control` | MPU6050, throttle, safety lock, motor PWM/relay and SG90 | target 20 ms / 5 |
 | `vehicle_light` | BH1750 and headlight, including fault blinking | 100 ms delay between updates / 4 |
-| `vehicle_telemetry` | GPS, INA226, EEPROM and Monitor logs | one snapshot per second / 3 |
+| `vehicle_telemetry` | GPS, INA226, EEPROM and Monitor logs | GPS polled between snapshots (normally 100 ms); snapshot every second / 3 |
 | `vehicle_network` | Wi-Fi startup and MQTT publishing | waits for queued snapshots / 2 |
 
 Network writes run only in `vehicle_network`. A one-element queue replaces
@@ -48,8 +48,9 @@ skipped before publishing; an already-started socket write cannot be recalled.
 Individual MQTT network operations use a 2 s timeout, which is not a guarantee
 of total end-to-end delivery latency. Slow sends log `MQTT send=... ms`.
 GPS/EEPROM/logs and headlight work therefore do not wait on MQTT socket writes.
-I2C devices still serialize access using the shared mutex, so the task periods
-are targets, not hard real-time guarantees.
+MPU6050 uses I2C0 with its own mutex. BH1750, EEPROM and INA226 share I2C1
+and a separate mutex. EEPROM releases the bus during its internal write cycle.
+Task periods remain targets, not hard real-time guarantees.
 
 The crash flag stays latched until reset. Telemetry puts the first crash in a
 separate queue and the network task retries until MQTT accepts it into the
@@ -128,8 +129,8 @@ low throttle for one second produces READY, and returning to low throttle
 stops output. EN/RESET restarts the startup lock. Software cannot guarantee
 relay state before GPIO initialization; verify the hardware default state.
 
-MPU6050, INA226, and EEPROM share the board I2C bus guard. Test each module
-alone before connecting all three, then verify that a missing module is
+MPU6050 has a dedicated board I2C bus guard; BH1750, INA226 and EEPROM share
+the auxiliary bus guard. Test each module alone, then verify that a missing module is
 reported without publishing a plausible-looking fake measurement.
 
 `PowerMonitor`, `GpsTracker`, and `DataLogger` contain initial drivers.
@@ -192,9 +193,10 @@ Do not publish sdkconfig or passwords.
 | `data_logger` | `DataLogger.cpp` | Test page writes, power-loss recovery, and circular-log reads on the actual EEPROM |
 | `telemetry_link` | `TelemetryLink.cpp` | Configure a private broker if needed; verify topic/payload and reconnect behavior |
 
-Keep motor cut-off local and independent of Wi-Fi. Coordinate I2C ownership
-before enabling concurrent sensor and EEPROM tasks; protect a shared bus with
-one mutex or a single bus-owner task.
+Keep motor cut-off local and independent of Wi-Fi. Initialize buses through
+`BoardI2c::initialize(port)` and protect each transaction with that port's
+`BoardI2c::LockGuard`. Keep EEPROM access in the telemetry task; the bus mutex
+does not serialize whole multi-page EEPROM operations across multiple callers.
 
 ## Default pin map
 
@@ -207,27 +209,61 @@ actual board and modules before wiring.
 | Motor driver PWM input | GPIO25 |
 | Headlight MOSFET PWM input | GPIO26 |
 | Relay control input | GPIO27 |
+| SG90 positional servo signal | GPIO23 (LEDC timer 2/channel 2, 50 Hz) |
 | MPU6050 SDA | GPIO21 |
 | MPU6050 SCL | GPIO22 |
+| BH1750 + AT24C256 + INA226 SDA (I2C1) | GPIO18 |
+| BH1750 + AT24C256 + INA226 SCL (I2C1) | GPIO19 |
 | NEO-6M TX → ESP32 RX | GPIO16 / UART2 |
 | NEO-6M RX ← ESP32 TX | GPIO17 / UART2 |
 
-The purchased MPU6050, INA226, and AT24C256 share the I2C bus on GPIO21/22.
+MPU6050 alone uses I2C0 on GPIO21/22. BH1750, INA226 and AT24C256 share
+I2C1 on GPIO18/19. Both buses run at 100 kHz and have independent mutexes.
+Before flashing this pin-map change, turn power off and move the auxiliary
+modules' SDA/SCL wires from GPIO21/22 to GPIO18/19. Do not bridge the buses.
+Keep a common ground and suitable pull-ups to 3.3 V on each bus; account for
+pull-ups already fitted to modules. ESP32 internal pull-ups alone may be too weak.
+
 Default I2C addresses in `BoardConfig.h` assume MPU6050 AD0 low (0x68), INA226
 A0/A1 strapped for 0x40, and AT24C256 A0-A2 grounded (0x50); verify the actual
-module straps before wiring. AT24C256 uses 32 KiB capacity, 64-byte pages, and
+module straps before wiring. BH1750 is probed at 0x23 and then 0x5C.
+AT24C256 uses 32 KiB capacity, 64-byte pages, and
 a 16-bit memory address. Do not run its I2C pull-ups at 5 V on the ESP32 bus.
+
+After rewiring, test with motor load power disconnected:
+
+1. Monitor should report I2C0 on SDA21/SCL22 and I2C1 on SDA18/SCL19.
+2. Confirm MPU6050 and EEPROM are available, and BH1750 lux changes when covered.
+   INA226 may remain MISSING until installed; its readings remain unavailable.
+3. Tilt the MPU6050 to verify the safety lock, then reset with throttle at zero.
+4. Verify EEPROM records can be read after reset and GPS obtains a valid fix.
+5. To test bus separation, power off, disconnect auxiliary modules, and restart.
+   MPU6050 should still be detected. Restore wiring with power off afterwards.
 
 The INA226 module's current calibration depends on the value printed on its
 onboard shunt resistor. Confirm that marking before using current and power
 readings; a generic "20 A" module label is not enough to select a safe,
-accurate calibration. The initial code assumes an R002 (2 mOhm) shunt with a
-20 A range; update `DEMO_INA226_SHUNT_MICRO_OHMS` and
+accurate calibration. The fitted module is marked R020 (20 mOhm); the code uses a
+4 A measurement range (80 mV across the shunt). This is measurement scaling,
+not motor current protection or a verified continuous-current rating of the board.
+The INA226 shunt input range of about 81.92 mV corresponds to about 4.096 A
+with this resistor; currents beyond the configured range cannot be trusted.
+See the [TI INA226 datasheet](https://www.ti.com/lit/ds/symlink/ina226.pdf).
+Update `DEMO_INA226_SHUNT_MICRO_OHMS` and
 `DEMO_INA226_MAX_CURRENT_MILLIAMPS` in `BoardConfig.h` to match the exact module
 before connecting the load. The driver rejects configurations whose maximum
 current would exceed the INA226 shunt-voltage range. State of charge currently
 reports unknown (`-1`); it needs a calibrated 3S battery model and is not
 inferred by linear voltage scaling.
+
+INA226 initialization and each sample's validity are separate. Monitor prints
+`INA226=READ_ERROR` with the driver error on a failed read instead of zero volts.
+MQTT keeps `power_available` for initialization and adds `power_valid` for the
+current sample; invalid voltage/current are JSON `null`. The existing EEPROM
+float fields store NaN for unavailable power readings, preserving the 64-byte
+layout and CRC. Historical zero records cannot retrospectively be classified.
+The native test `python tests/power_host_test.py [path-to-g++]` checks init/read
+failures, valid zero readings, signed current and recovery with fake I2C.
 
 The logger stores 64-byte CRC-protected records in a circular region and scans
 the EEPROM at startup to recover the newest complete record after power loss.
@@ -245,7 +281,85 @@ Use the 3S pack's BMS and a charger intended for 3S Li-ion packs (12.6 V
 termination). Fuse the battery output near the pack. The LM2596 is for the
 low-voltage electronics supply, not for powering the motor or headlight.
 
+## Adaptive headlight with SG90
+
+Use a positional SG90, not a continuous-rotation servo. The implementation lives
+in `components/headlight_controller/AdaptiveServo.cpp`; the control task updates
+it from the same MPU6050 sample used for crash detection. It uses independent
+LEDC timer 2/channel 2 at 50 Hz and 16-bit resolution, leaving motor and lamp
+PWM timers unchanged. See [Espressif LEDC documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32/api-reference/peripherals/ledc.html)
+and [TowerPro SG90 specifications](https://towerpro.com.tw/product/sg90-7/).
+
+| SG90 lead (verify markings on your servo) | Connection |
+| --- | --- |
+| Orange/yellow, signal | ESP32 GPIO23 |
+| Red, supply | Separate regulated servo supply around 5 V, suitable for its starting/stall current |
+| Brown/black, ground | Servo supply ground and ESP32 GND |
+
+Do not power the servo from ESP32 3V3, a GPIO, or the 3S battery directly. With
+ESP32 on USB, connect only the external servo supply's ground to the ESP32;
+do not join its positive rail to ESP32 3V3/VIN. Turn power off before rewiring.
+Given the earlier overheated board, use a verified working kit and keep the
+suspected damaged I2C modules disconnected during initial servo tests.
+
+Defaults in `BoardConfig.h`:
+
+- Center command 90 degrees; range 60..120 degrees. Mapping uses 1000..2000 us
+  for nominal 0..180 degrees, giving a restricted initial pulse range around
+  1500 us. Actual angle depends on the servo; calibrate without forcing stops.
+- Gain 1, direction +1, zero offset 0 degrees; 3-degree continuous deadband,
+  150 ms roll filter, maximum command rate 60 degrees/second.
+- MPU mounted X forward, Y lateral, Z up: roll is `atan2(ay, az)` in degrees.
+  `DEMO_MPU_ROLL_USE_Y=0` uses X as the lateral axis for a different mounting.
+  `DEMO_SERVO_DIRECTION=-1` reverses steering; `DEMO_SERVO_ROLL_ZERO_DEG` corrects
+  the stationary mounting offset without changing the crash threshold.
+
+Start with motor power disconnected, servo horn/lamp detached and the MPU flat.
+After initialization, install the horn so the lamp faces forward at the center
+command. Orient the servo shaft vertically for horizontal left/right steering.
+Mount only a lightweight lamp supported without forcing the servo shaft.
+Tilt the MPU slowly in both directions below 60 degrees and check the Monitor's
+`SERVO TRACKING | roll=... | command=... | target=...` line once per second.
+Reverse the direction setting if the lamp turns the wrong way. Return flat and
+verify centering. A missing/failed MPU sample, non-finite roll, roll magnitude
+at least 60 degrees, or latched safety fault commands a smooth return to center.
+After a crash lock, place the MPU upright, return throttle to zero and reset.
+PWM errors stop servo pulses and log UNAVAILABLE; reset is required to retry.
+
+There is no servo position or power feedback: TRACKING means PWM commands are
+being generated, not that the servo is physically connected. On startup the
+center pulse can move an off-center servo immediately; do the first test with
+the horn detached. Lamp and servo commands are published in the `lighting`
+object on `vehicle/telemetry` and shown on the dashboard, as well as Monitor.
+They are not stored in EEPROM. The headlight follows BH1750 and blinks on a safety fault.
+Servo movement is independent of ambient light, so it can be tested in daylight.
+
+This is a bench prototype based on accelerometer roll. Vehicle acceleration
+affects this estimate; it does not predict a bend before the vehicle leans, and
+one horizontal servo does not also correct beam roll. Dynamic vehicle use needs
+validated orientation estimation and optical/mechanical calibration.
+
+Run `python tests/adaptive_servo_host_test.py [path-to-g++]` to check pulse setup,
+limits, smoothing, failure behavior, signed roll and the existing crash threshold
+using mocked hardware. Physical servo travel and supply stability need bench tests.
+
 ## Build in VS Code
+
+GPS diagnostics use UART2 RX16 (GPS TX), TX17 (GPS RX), 9600 baud. The Monitor
+prints `GPS UART status=...` once per telemetry snapshot, with cumulative byte,
+checksum-valid sentence and rejected-line counts. `rx_age`/`nmea_age` are ages
+in milliseconds; -1 means never received. UART initialization alone does not
+prove a module is connected. See `web/README.md` for each diagnostic state.
+These fields travel in copied network snapshots; the EEPROM record format is
+unchanged. A GGA quality of zero or an RMC void status invalidates the current
+fix, and fixes expire after 5 seconds without a valid position update. GGA's
+satellite count reports satellites used in the fix, not all satellites visible.
+
+Host regression checks (no hardware): `python tests/gps_host_test.py`, with a
+native `g++` on PATH, or pass its executable path as the first argument. This
+compiles the actual GPS driver with a fake UART/clock to exercise fragmented
+NMEA, checksum errors, no-fix reports, stale data, UART failures and recovery.
+It does not validate the physical GPS, power supply or antenna.
 
 1. Open this `software` directory as the ESP-IDF project (not the repository
    parent directory).
@@ -259,6 +373,62 @@ intentionally not shared. Each collaborator generates their own build and
 `sdkconfig` from the committed defaults.
 
 ## Safety and known limitations
+
+### Sensor failure handling and regression checks
+
+- Total tilt is 0..180 degrees, including an upside-down MPU. Tilt >=60 degrees
+  must persist for 200 ms; a failed read breaks that confirmation interval.
+- All four I2C modules use the new ESP-IDF master driver through BoardI2c.
+  Device handles are cached per bus/address under the existing bus mutex.
+  No legacy I2C driver is installed. See the [ESP-IDF I2C guide](https://docs.espressif.com/projects/esp-idf/en/release-v5.5/esp32/api-reference/peripherals/i2c.html).
+- Runtime MPU reads use a 20 ms transaction timeout and do not wait for the
+  dedicated bus mutex. The first failure stops PWM/relay and enters `SENSOR_WAIT`.
+  Three good readings spanning at least 40 ms are required to recover, within
+  200 ms of the first failure. Recovery returns to `LOCKED`, requiring throttle
+  <=2% for one second; it never automatically resumes motor power.
+- Failure to recover by the deadline latches `FAULT_LOCKED`. MPU reads then
+  pause until reset, while lamp warning, servo centering and telemetry continue.
+  Logs and motor MQTT payload include `fault_reason`. The read deadline is not
+  a guarantee of physical relay release time or recovery of damaged hardware.
+- Timed-out buses wait at least 20 ms (MPU) or 100 ms (AUX) before another
+  transaction. There is no busy retry/reset loop. Control skips missed periods
+  instead of issuing catch-up reads, and runs on core 1 on dual-core ESP32.
+  Watchdogs remain enabled with their existing timeouts.
+- BH1750 read failures invalidate lux (`-1`) and command full lamp brightness
+  on that update. Successful subsequent reads restore automatic brightness.
+  Safety-fault blinking still takes priority.
+- MQTT adds `mpu_valid`, `eeprom_write_ok` and `crash_latched`. Initialization
+  flags retain their old meaning; invalid MPU tilt is JSON `null`. EEPROM write
+  status describes the current record's write result, not a read-back verification.
+- EEPROM byte 29 now stores the latched crash event rather than the instantaneous
+  tilt threshold. The 64-byte format and CRC remain compatible with old records.
+  `readLatest` returns the flag and startup logs it. Old records cannot recover
+  events that the previous firmware never wrote. Logging remains periodic (1 Hz),
+  so power loss before a successful write can still lose the latest event.
+
+Run `python tests/sensor_recovery_host_test.py path-to-native-g++` for BH1750
+failure/recovery and EEPROM crash persistence through restart/write failure.
+`tests/adaptive_servo_host_test.py` also covers inverted orientation and interrupted
+crash confirmation. These tests mock hardware; they do not replace bench tests.
+`tests/mpu_health_host_test.py` covers transient faults, recovery confirmation,
+deadline and clock wrap; `tests/board_i2c_host_test.py` covers handle reuse,
+bus isolation, timeout conversion and cooldown. Both take a native g++ path.
+
+After flashing, look for `I2C0 new master driver` / `I2C1 new master driver`.
+With motor power disconnected, test startup and repeated Wi-Fi reconnects.
+An isolated MPU error should log `MPU RECOVERING`, then `MPU RECOVERED` and
+require zero throttle again. A persistent failure must keep relay/PWM off,
+show a repeating lock reason and avoid repeated MPU reads. To simulate unplugged
+hardware, power down before changing wiring; do not short SDA/SCL for testing.
+If an interrupt watchdog panic recurs, capture the complete new backtrace;
+the previous legacy-driver backtrace cannot prove the new driver is fault-free.
+
+If the normal build cache contains a Windows GCC compiler or a missing
+`CMakeFiles/rules.ninja`, use a clean, isolated directory from an ESP-IDF terminal:
+`idf.py -B build/verified build`. Flash that same build with
+`idf.py -B build/verified -p COM9 flash monitor` (replace COM9 as needed).
+In VS Code set `idf.buildPath` to `${workspaceFolder}/build/verified` to use it
+for Build/Flash as well. Keep generic CMake Tools builds out of this directory.
 
 The tilt estimate uses only the accelerometer, so vibration and motor
 acceleration can produce inaccurate readings. The threshold and behavior are

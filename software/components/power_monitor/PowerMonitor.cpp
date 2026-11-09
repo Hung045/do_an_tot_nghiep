@@ -1,13 +1,16 @@
 #include "PowerMonitor.h"
 
 #include <cstdint>
+#include <limits>
 
 #include "BoardConfig.h"
-#include "driver/i2c.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 namespace {
+
+constexpr i2c_port_t kI2cPort = DEMO_AUX_I2C_PORT;
 
 constexpr uint8_t kConfigurationRegister = 0x00;
 constexpr uint8_t kBusVoltageRegister = 0x02;
@@ -19,7 +22,7 @@ constexpr float kMaximumShuntVoltageVolts = 0.08192F;
 
 esp_err_t writeRegister(uint8_t address, uint16_t value)
 {
-    BoardI2c::LockGuard lock(pdMS_TO_TICKS(100));
+    BoardI2c::LockGuard lock(kI2cPort, pdMS_TO_TICKS(100));
     if (!lock.isLocked()) {
         return ESP_ERR_TIMEOUT;
     }
@@ -28,8 +31,8 @@ esp_err_t writeRegister(uint8_t address, uint16_t value)
         static_cast<uint8_t>(value >> 8),
         static_cast<uint8_t>(value & 0xFFU),
     };
-    return i2c_master_write_to_device(
-        I2C_NUM_0,
+    return BoardI2c::write(
+        kI2cPort,
         DEMO_INA226_ADDRESS,
         data,
         sizeof(data),
@@ -42,13 +45,13 @@ esp_err_t readRegister(uint8_t address, uint16_t *value)
         return ESP_ERR_INVALID_ARG;
     }
 
-    BoardI2c::LockGuard lock(pdMS_TO_TICKS(100));
+    BoardI2c::LockGuard lock(kI2cPort, pdMS_TO_TICKS(100));
     if (!lock.isLocked()) {
         return ESP_ERR_TIMEOUT;
     }
     uint8_t data[2] = {};
-    esp_err_t err = i2c_master_write_read_device(
-        I2C_NUM_0,
+    esp_err_t err = BoardI2c::writeRead(
+        kI2cPort,
         DEMO_INA226_ADDRESS,
         &address,
         1,
@@ -67,9 +70,10 @@ esp_err_t readRegister(uint8_t address, uint16_t *value)
 
 esp_err_t PowerMonitor::initialize()
 {
-    if (BoardI2c::getMutex() == nullptr) {
-        return ESP_ERR_NO_MEM;
-    }
+    initialized_ = false;
+    currentLsbAmps_ = 0.0F;
+    const esp_err_t busErr = BoardI2c::initialize(kI2cPort);
+    if (busErr != ESP_OK) return busErr;
     constexpr float shuntResistanceOhms =
         static_cast<float>(DEMO_INA226_SHUNT_MICRO_OHMS) / 1000000.0F;
     constexpr float maximumCurrentAmps =
@@ -112,6 +116,10 @@ esp_err_t PowerMonitor::initialize()
         return ESP_ERR_NOT_FOUND;
     }
 
+    initialized_ = true;
+    ESP_LOGI("PowerMonitor", "INA226 detected; configured shunt=%lu uOhm, range=%lu mA; verify against module",
+             static_cast<unsigned long>(DEMO_INA226_SHUNT_MICRO_OHMS),
+             static_cast<unsigned long>(DEMO_INA226_MAX_CURRENT_MILLIAMPS));
     return ESP_OK;
 }
 
@@ -120,7 +128,10 @@ esp_err_t PowerMonitor::read(PowerReading *reading)
     if (reading == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (currentLsbAmps_ <= 0.0F) {
+    // Failed reads must not leave old or plausible zero measurements behind.
+    const float unknown = std::numeric_limits<float>::quiet_NaN();
+    *reading = {unknown, unknown, unknown, -1.0F};
+    if (!initialized_ || currentLsbAmps_ <= 0.0F) {
         return ESP_ERR_INVALID_STATE;
     }
 

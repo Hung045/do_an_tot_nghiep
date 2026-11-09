@@ -4,13 +4,12 @@
 #include <cstdint>
 
 #include "BoardConfig.h"
-#include "driver/i2c.h"
 #include "esp_log.h"
 #include "freertos/task.h"
 
 namespace {
 
-constexpr i2c_port_t kI2cPort = I2C_NUM_0;
+constexpr i2c_port_t kI2cPort = DEMO_MPU_I2C_PORT;
 constexpr uint8_t kWhoAmIRegister = 0x75;
 constexpr uint8_t kConfigRegister = 0x1A;
 constexpr uint8_t kAccelDataRegister = 0x3B;
@@ -21,13 +20,13 @@ constexpr uint32_t kCrashConfirmMs = 200;
 
 esp_err_t writeRegister(uint8_t registerAddress, uint8_t value)
 {
-    BoardI2c::LockGuard lock(pdMS_TO_TICKS(100));
+    BoardI2c::LockGuard lock(kI2cPort, pdMS_TO_TICKS(100));
     if (!lock.isLocked()) {
         return ESP_ERR_TIMEOUT;
     }
 
     const uint8_t data[] = {registerAddress, value};
-    return i2c_master_write_to_device(
+    return BoardI2c::write(
         kI2cPort,
         DEMO_MPU6050_ADDRESS,
         data,
@@ -39,17 +38,21 @@ esp_err_t writeRegister(uint8_t registerAddress, uint8_t value)
 
 esp_err_t CrashDetector::initialize()
 {
-    BoardI2c::getMutex();
+    const esp_err_t busErr = BoardI2c::initialize(kI2cPort);
+    if (busErr != ESP_OK) {
+        available_ = false;
+        return busErr;
+    }
 
     uint8_t deviceId = 0;
     esp_err_t err = ESP_FAIL;
     {
-        BoardI2c::LockGuard lock(pdMS_TO_TICKS(100));
+        BoardI2c::LockGuard lock(kI2cPort, pdMS_TO_TICKS(100));
         if (!lock.isLocked()) {
             available_ = false;
             return ESP_ERR_TIMEOUT;
         }
-        err = i2c_master_write_read_device(
+        err = BoardI2c::writeRead(
             kI2cPort,
             DEMO_MPU6050_ADDRESS,
             &kWhoAmIRegister,
@@ -100,6 +103,8 @@ esp_err_t CrashDetector::update(float *tiltDegrees, bool *crashDetected)
 
     esp_err_t err = readTiltDegrees(tiltDegrees);
     if (err != ESP_OK) {
+        tiltTiming_ = false;
+        *crashDetected = false;
         return err;
     }
 
@@ -122,18 +127,19 @@ esp_err_t CrashDetector::readTiltDegrees(float *tiltDegrees)
 {
     uint8_t data[6] = {};
     {
-        BoardI2c::LockGuard lock(pdMS_TO_TICKS(100));
+        // Dedicated MPU bus: do not wait behind another owner in the control loop.
+        BoardI2c::LockGuard lock(kI2cPort, 0);
         if (!lock.isLocked()) {
             return ESP_ERR_TIMEOUT;
         }
-        esp_err_t err = i2c_master_write_read_device(
+        esp_err_t err = BoardI2c::writeRead(
             kI2cPort,
             DEMO_MPU6050_ADDRESS,
             &kAccelDataRegister,
             1,
             data,
             sizeof(data),
-            pdMS_TO_TICKS(100));
+            pdMS_TO_TICKS(20));
         if (err != ESP_OK) {
             return err;
         }
@@ -143,7 +149,12 @@ esp_err_t CrashDetector::readTiltDegrees(float *tiltDegrees)
     const auto accelY = static_cast<float>(static_cast<int16_t>((static_cast<uint16_t>(data[2]) << 8) | data[3]));
     const auto accelZ = static_cast<float>(static_cast<int16_t>((static_cast<uint16_t>(data[4]) << 8) | data[5]));
 
-    *tiltDegrees = std::atan2(std::sqrt((accelX * accelX) + (accelY * accelY)), std::fabs(accelZ)) *
+    if (accelX == 0.0F && accelY == 0.0F && accelZ == 0.0F) return ESP_ERR_INVALID_STATE;
+    // Signed roll for lamp steering; crash detection keeps its existing total tilt.
+    rollDegrees_ = std::atan2(DEMO_MPU_ROLL_USE_Y ? accelY : accelX, accelZ) * kRadiansToDegrees;
+
+    // Preserve Z's sign: upright=0, on its side=90, upside down=180 degrees.
+    *tiltDegrees = std::atan2(std::sqrt((accelX * accelX) + (accelY * accelY)), accelZ) *
                    kRadiansToDegrees;
     return ESP_OK;
 }

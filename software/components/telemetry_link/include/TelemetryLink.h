@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include "ProjectTypes.h"
+#include "GpsDiagnostics.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "mqtt_client.h"
@@ -16,10 +17,15 @@ public:
                                bool mpuAvailable,
                                bool gpsAvailable,
                                bool powerAvailable,
-                               bool eepromAvailable);
+                               bool powerValid,
+                               bool eepromAvailable,
+                               const GpsDiagnostics &gpsDiagnostics,
+                               bool mpuValid,
+                               bool eepromWriteOk,
+                               const LightingTelemetry &lighting);
     esp_err_t publishMotorTelemetry(uint32_t uptimeMs, const char *phase, int raw,
                                     uint32_t throttlePercent, float filteredPercent,
-                                    uint32_t dutyPermille, bool relayOn);
+                                    uint32_t dutyPermille, bool relayOn, const char *faultReason);
     esp_err_t publishEvent(VehicleEvent event, const GpsFix &fix);
 
 private:

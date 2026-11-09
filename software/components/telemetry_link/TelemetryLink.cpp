@@ -1,6 +1,7 @@
 #include "TelemetryLink.h"
 
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 
 #include "esp_event.h"
@@ -130,7 +131,7 @@ esp_err_t TelemetryLink::initialize(const char *brokerUri)
 
 esp_err_t TelemetryLink::publishMotorTelemetry(
     uint32_t uptimeMs, const char *phase, int raw, uint32_t throttlePercent,
-    float filteredPercent, uint32_t dutyPermille, bool relayOn)
+    float filteredPercent, uint32_t dutyPermille, bool relayOn, const char *faultReason)
 {
     const esp_mqtt_client_handle_t client = mqttClient_.load();
     if (client == nullptr || !mqttConnected_.load()) {
@@ -140,15 +141,17 @@ esp_err_t TelemetryLink::publishMotorTelemetry(
     if (phase == nullptr || throttlePercent > 100U || dutyPermille > 1000U) {
         return ESP_ERR_INVALID_ARG;
     }
-    char payload[256] = {};
+    // Fault reasons are fixed application strings, not external input.
+    if (!faultReason) faultReason = "";
+    char payload[384] = {};
     const int length = std::snprintf(
         payload, sizeof(payload),
         "{\"uptime_ms\":%lu,\"phase\":\"%s\",\"raw\":%d,\"throttle_pct\":%lu,"
-        "\"filtered_pct\":%.1f,\"pwm_pct\":%.1f,\"relay_cmd\":%s}",
+        "\"filtered_pct\":%.1f,\"pwm_pct\":%.1f,\"relay_cmd\":%s,\"fault_reason\":\"%s\"}",
         static_cast<unsigned long>(uptimeMs), phase, raw,
         static_cast<unsigned long>(throttlePercent),
         static_cast<double>(filteredPercent), static_cast<double>(dutyPermille / 10.0f),
-        relayOn ? "true" : "false");
+        relayOn ? "true" : "false", faultReason);
     if (length < 0 || static_cast<size_t>(length) >= sizeof(payload)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -162,14 +165,31 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
                                            bool mpuAvailable,
                                            bool gpsAvailable,
                                            bool powerAvailable,
-                                           bool eepromAvailable)
+                                           bool powerValid,
+                                           bool eepromAvailable,
+                                           const GpsDiagnostics &gpsDiagnostics,
+                                           bool mpuValid,
+                                           bool eepromWriteOk,
+                                           const LightingTelemetry &lighting)
 {
     const esp_mqtt_client_handle_t client = mqttClient_.load();
     if (client == nullptr || !mqttConnected_.load()) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    char payload[384] = {};
+    char payload[1536] = {};
+    char lightPayload[384] = {};
+    const int lightLength = std::snprintf(lightPayload, sizeof(lightPayload),
+        "{\"output_valid\":%s,\"ambient_lux\":%.1f,\"duty_pct\":%lu,\"fault_blink\":%s,"
+        "\"servo_ready\":%s,\"servo_tracking\":%s,\"roll_valid\":%s,\"roll_deg\":%.1f,"
+        "\"servo_cmd_deg\":%.1f,\"servo_target_deg\":%.1f}",
+        lighting.outputValid ? "true" : "false",
+        static_cast<double>(std::isfinite(lighting.ambientLux) ? lighting.ambientLux : -1.0F),
+        static_cast<unsigned long>(lighting.dutyPercent), lighting.faultBlink ? "true" : "false",
+        lighting.servoReady ? "true" : "false", lighting.servoTracking ? "true" : "false",
+        lighting.rollValid ? "true" : "false", static_cast<double>(lighting.rollDegrees),
+        static_cast<double>(lighting.servoDegrees), static_cast<double>(lighting.servoTargetDegrees));
+    if (lightLength < 0 || static_cast<size_t>(lightLength) >= sizeof(lightPayload)) return ESP_ERR_INVALID_SIZE;
     char latitude[24] = {};
     char longitude[24] = {};
     char tilt[24] = {};
@@ -180,12 +200,15 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
                      latitude, sizeof(latitude));
     formatCoordinate(record.gps.longitudeDegrees, gpsFixValid,
                      longitude, sizeof(longitude));
-    if (mpuAvailable) {
+    const bool mpuReadingValid = mpuAvailable && mpuValid && std::isfinite(record.tiltDegrees);
+    if (mpuReadingValid) {
         std::snprintf(tilt, sizeof(tilt), "%.2f", static_cast<double>(record.tiltDegrees));
     } else {
         std::snprintf(tilt, sizeof(tilt), "null");
     }
-    if (powerAvailable) {
+    const bool powerReadingValid = powerAvailable && powerValid &&
+        std::isfinite(record.busVoltageVolts) && std::isfinite(record.currentMilliamps);
+    if (powerReadingValid) {
         std::snprintf(voltage, sizeof(voltage), "%.3f", static_cast<double>(record.busVoltageVolts));
         std::snprintf(current, sizeof(current), "%.1f", static_cast<double>(record.currentMilliamps));
     } else {
@@ -195,26 +218,38 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
     const int payloadLength = std::snprintf(
         payload,
         sizeof(payload),
-        "{\"uptime_ms\":%lu,\"mpu_available\":%s,\"tilt_deg\":%s,"
-        "\"gps_available\":%s,\"gps_valid\":%s,\"power_available\":%s,"
-        "\"eeprom_available\":%s,\"throttle_percent\":%lu,"
+        "{\"uptime_ms\":%lu,\"mpu_available\":%s,\"mpu_valid\":%s,\"tilt_deg\":%s,"
+        "\"gps_available\":%s,\"gps_valid\":%s,\"power_available\":%s,\"power_valid\":%s,"
+        "\"eeprom_available\":%s,\"eeprom_write_ok\":%s,\"crash_latched\":%s,\"throttle_percent\":%lu,"
         "\"bus_voltage_v\":%s,\"current_ma\":%s,"
         "\"latitude_deg\":%s,\"longitude_deg\":%s,"
-        "\"speed_mps\":%.2f,\"satellites\":%lu}\n",
+        "\"speed_mps\":%.2f,\"satellites\":%lu,"
+        "\"gps_status\":\"%s\",\"gps_rx_bytes\":%lu,\"gps_nmea_ok\":%lu,"
+        "\"gps_rejected\":%lu,\"gps_rx_age_ms\":%ld,\"gps_nmea_age_ms\":%ld,\"lighting\":%s}\n",
         static_cast<unsigned long>(record.uptimeMilliseconds),
         mpuAvailable ? "true" : "false",
+        mpuReadingValid ? "true" : "false",
         tilt,
         gpsAvailable ? "true" : "false",
         gpsFixValid ? "true" : "false",
         powerAvailable ? "true" : "false",
+        powerReadingValid ? "true" : "false",
         eepromAvailable ? "true" : "false",
+        eepromAvailable && eepromWriteOk ? "true" : "false",
+        record.crashDetected ? "true" : "false",
         static_cast<unsigned long>(record.throttlePercent),
         voltage,
         current,
         latitude,
         longitude,
         static_cast<double>(record.gps.speedMetersPerSecond),
-        static_cast<unsigned long>(record.gps.satellitesInView));
+        static_cast<unsigned long>(record.gps.satellitesInView),
+        gpsStatusName(gpsDiagnostics.status),
+        static_cast<unsigned long>(gpsDiagnostics.receivedBytes),
+        static_cast<unsigned long>(gpsDiagnostics.validSentences),
+        static_cast<unsigned long>(gpsDiagnostics.rejectedSentences),
+        static_cast<long>(gpsDiagnostics.rxAgeMs),
+        static_cast<long>(gpsDiagnostics.nmeaAgeMs), lightPayload);
     if (payloadLength < 0 || static_cast<size_t>(payloadLength) >= sizeof(payload)) {
         return ESP_ERR_INVALID_SIZE;
     }
