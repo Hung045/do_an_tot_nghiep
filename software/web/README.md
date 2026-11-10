@@ -45,9 +45,12 @@ mở dashboard khi kết nối chung một mạng Wi-Fi/LAN.
 5. Đặt MQTT broker URI của firmware thành `mqtt://<IPv4-của-laptop>:1883`
    trong menuconfig, rồi build và flash lại để ESP32 gửi dữ liệu qua broker
    trong mạng LAN.
-6. ESP32 gửi dữ liệu mỗi giây. Xoay biến trở và so sánh với Monitor. Dashboard
+6. ESP32 tạo dữ liệu trực tiếp mỗi 200 ms (5 lần/giây); Monitor vẫn in mỗi giây.
+   INA226 và EEPROM chạy ở task riêng, tối đa khoảng 1 lần/giây. Trạng thái ghi
+   EEPROM là kết quả lần ghi gần nhất, không phải xác nhận từng bản tin web.
+   Xoay biến trở và so sánh với Monitor. Dashboard
    hiển thị ga/PWM, trạng thái relay, pha điều khiển, thời gian hoạt động và
-   biểu đồ 60 mẫu telemetry gần nhất.
+   biểu đồ 60 mẫu telemetry gần nhất (khoảng 12 giây khi mạng ổn định).
 7. Ngắt ESP32 để kiểm tra cảnh báo dữ liệu cũ sau 5 giây; kết nối lại để
    xác nhận dữ liệu tiếp tục cập nhật. Cảnh báo cũng nêu khi lệnh relay/PWM
    không nhất quán với pha điều khiển. Đây chỉ là kiểm tra telemetry, không
@@ -114,7 +117,7 @@ Trong lúc khóa, `mpu_valid:false` không đồng nghĩa cảm biến đã hỏ
 đã tạm dừng có chủ đích. Không bỏ khóa để thử động cơ khi chưa xử lý nguyên nhân.
 
 Khối **Ánh sáng và hướng chiếu** nhận trường `lighting` trong `vehicle/telemetry`
-mỗi khoảng 1 giây. Servo vẫn được điều khiển cục bộ theo chu kỳ 20 ms; web chỉ
+mỗi khoảng 200 ms. Servo vẫn được điều khiển cục bộ theo chu kỳ 20 ms; web chỉ
 hiển thị nên không dùng chuyển động trên web để đánh giá độ trễ cơ khí.
 
 - `output_valid`: lần cập nhật PWM đèn thành công và mẫu còn mới.

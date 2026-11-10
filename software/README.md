@@ -61,7 +61,7 @@ undelivered event. EEPROM history is separate from MQTT event delivery.
 After flashing, verify with motor load power disconnected:
 
 1. Compare throttle in Monitor, `vehicle/motor` and the web with a healthy
-   network. Samples remain at 1 Hz; record any persistent delay.
+   network. Live samples run at 5 Hz; record any persistent delay.
 2. Stop the broker for 15 seconds. Monitor and EEPROM should continue updating;
    cover/uncover BH1750 to check that the headlight still responds.
 3. Trigger a tilt fault while offline. PWM/relay commands must go to OFF/zero
@@ -89,25 +89,30 @@ mapped before rounding and smoothed with an EMA (alpha 0.2 per 20 ms).
 Duty rises by at most 1 percentage point per iteration and falls by at most
 2 points. A full-scale rise takes about 2 s plus relay/filter latency.
 Starting also requires filtered throttle >=5%. Stop and fault paths bypass
-the ramp; the existing 200 ms stop confirmation uses unfiltered input.
-Short low-input glitches hold the filter and PWM; confirmed stops clear both.
-Logs show raw throttle, filtered throttle and PWM with one decimal place.
+the ramp. A valid unfiltered throttle sample <=2% stops immediately and clears
+the filter and PWM, including brief low-input dips. Logs show throttle and PWM.
 The 50-kohm potentiometer still uses the configured ADC endpoints; resistance
 is not a multiplier for duty. Wire its ends to 3V3/GND and wiper to GPIO34.
 This is open-loop duty control, not proportional measured motor speed.
 The startup lock, 5% start threshold and relay settling delay still apply.
-Returning to 0-2% for 200 ms sets PWM zero
-before opening the relay and returns directly to READY. The one-second
-low-throttle hold is required only at startup/reset, not after normal stops.
+Returning to 0-2% sets PWM zero before opening the relay and returns directly
+to READY. Startup/reset also requires only one valid low-throttle sample.
 ADC or output-command errors latch a stop until reset, retrying both stop
 commands. The control loop runs every 20 ms. Relay control is active-low.
-Short low-throttle glitches hold the previous PWM command; a sustained low
-input stops after 200 ms from its first sample (plus sampling/scheduling latency).
-ADC faults bypass this debounce. Confirmed stops log immediately.
-Every 1 second, it logs throttle raw ADC and percent from the same sample,
+There is no 200 ms stop debounce; response is subject to sampling/scheduling
+latency. ADC faults latch a safety stop. Successful stop commands log immediately.
+Every 1 second, it logs throttle percent,
 alongside the relay and PWM commands and
 LOCKED/READY/RELAY_WAIT/RUNNING/FAULT_LOCKED state.
 Command values are not physical feedback from the relay contacts or PWM pin.
+Live motor, MPU and lighting snapshots are queued every 200 ms (5 Hz), plus
+control-state changes. A separate low-priority storage task reads INA226 and
+writes EEPROM at most once per second; its I2C waits do not block live telemetry.
+Power readings older than 2.5 seconds are invalidated. EEPROM write status is
+the latest completed write result, not an acknowledgement of each live frame.
+Storage and network queues each retain only the newest pending sample.
+MQTT connection failures still interrupt web updates; 200 ms is the production
+interval, not a guaranteed end-to-end delivery time.
 Missing modules are reported through logs and telemetry. With
 `DEMO_REQUIRE_MPU6050` enabled (the default), a missing MPU6050 locks motor
 PWM and relay off while networking and telemetry continue. Disable it only

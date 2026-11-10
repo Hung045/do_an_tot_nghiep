@@ -32,7 +32,9 @@ namespace {
 
 constexpr char TAG[] = "vehicle_system";
 constexpr uint32_t kControlPeriodMs = 20;
-constexpr uint32_t kTelemetryPeriodMs = 1000;
+constexpr uint32_t kTelemetryPeriodMs = 200;
+constexpr uint32_t kStoragePeriodMs = 1000;
+constexpr uint32_t kMonitorPeriodMs = 1000;
 constexpr uint32_t kZeroThrottle = 2;
 constexpr uint32_t kStartThrottle = 5;
 constexpr bool kInvertThrottleDirection = true;
@@ -75,6 +77,13 @@ struct LightSnapshot {
     TickType_t sampledAt;
 };
 
+struct StorageSnapshot {
+    PowerReading power;
+    bool powerValid;
+    bool writeOk;
+    TickType_t sampledAt;
+};
+
 // Khai báo toàn bộ các Module của cả nhóm
 CrashDetector crashDetector;
 DataLogger dataLogger;
@@ -89,6 +98,8 @@ QueueHandle_t telemetryQueue = nullptr;
 QueueHandle_t networkQueue = nullptr;
 QueueHandle_t crashQueue = nullptr;
 QueueHandle_t lightQueue = nullptr;
+QueueHandle_t storageQueue = nullptr;
+QueueHandle_t storageStatusQueue = nullptr;
 std::atomic<bool> safetyFault{false};
 bool crashDetectorReadyForTelemetry = false;
 bool powerMonitorReadyForTelemetry = false;
@@ -185,6 +196,29 @@ void headlightTask(void *)
     }
 }
 
+// Slow auxiliary I2C work never blocks assembling live motor/GPS frames.
+void storageTask(void *)
+{
+    for (;;) {
+        TelemetryRecord record = {};
+        if (xQueueReceive(storageQueue, &record, portMAX_DELAY) != pdPASS) continue;
+        StorageSnapshot status = {};
+        const esp_err_t err = powerMonitorReadyForTelemetry
+            ? powerMonitor.read(&status.power) : ESP_ERR_INVALID_STATE;
+        status.powerValid = err == ESP_OK && std::isfinite(status.power.busVoltageVolts) &&
+                            std::isfinite(status.power.currentMilliamps);
+        status.sampledAt = xTaskGetTickCount();
+        record.busVoltageVolts = status.powerValid ? status.power.busVoltageVolts :
+            std::numeric_limits<float>::quiet_NaN();
+        record.currentMilliamps = status.powerValid ? status.power.currentMilliamps :
+            std::numeric_limits<float>::quiet_NaN();
+        status.writeOk = dataLoggerReadyForTelemetry && dataLogger.append(record) == ESP_OK;
+        xQueueOverwrite(storageStatusQueue, &status);
+        // No catch-up writes: consume only the latest pending sample next time.
+        vTaskDelay(pdMS_TO_TICKS(kStoragePeriodMs));
+    }
+}
+
 void telemetryTask(void *)
 {
     PowerReading powerReading = {};
@@ -192,6 +226,7 @@ void telemetryTask(void *)
     bool crashQueued = false;
     float ambientLux = -1.0F;
     uint32_t lightDuty = 0;
+    TickType_t lastMonitor = xTaskGetTickCount() - pdMS_TO_TICKS(kMonitorPeriodMs);
 
     for (;;) {
         TelemetrySnapshot snapshot = {};
@@ -202,7 +237,7 @@ void telemetryTask(void *)
             ambientLux = light.ambientLux;
             lightDuty = light.duty;
         }
-        // Drain UART even between the 1 Hz snapshots (normally every 100 ms).
+        // Drain UART between snapshots (normally every 100 ms).
         if (gpsTrackerReadyForTelemetry) {
             const esp_err_t gpsErr = gpsTracker.readFix(&gpsFix);
             if (gpsErr != ESP_OK && gpsErr != ESP_ERR_NOT_FOUND) {
@@ -212,10 +247,12 @@ void telemetryTask(void *)
 
         if (received != pdPASS) continue;
         const GpsDiagnostics gpsDiagnostics = gpsTracker.diagnostics();
-        const esp_err_t powerErr = powerMonitorReadyForTelemetry
-            ? powerMonitor.read(&powerReading) : ESP_ERR_INVALID_STATE;
-        const bool powerValid = powerErr == ESP_OK &&
-            std::isfinite(powerReading.busVoltageVolts) && std::isfinite(powerReading.currentMilliamps);
+        StorageSnapshot storage = {};
+        const bool storageFresh = storageStatusQueue != nullptr &&
+            xQueuePeek(storageStatusQueue, &storage, 0) == pdPASS &&
+            static_cast<TickType_t>(xTaskGetTickCount() - storage.sampledAt) <= pdMS_TO_TICKS(2500);
+        powerReading = storage.power;
+        const bool powerValid = storageFresh && storage.powerValid;
 
         TelemetryRecord record = {};
         record.uptimeMilliseconds = snapshot.uptimeMilliseconds;
@@ -231,10 +268,8 @@ void telemetryTask(void *)
         if (snapshot.crashEvent && !crashQueued && crashQueue != nullptr) {
             crashQueued = xQueueSend(crashQueue, &gpsFix, 0) == pdPASS;
         }
-        bool eepromWriteOk = false;
-        if (dataLoggerReadyForTelemetry) {
-            eepromWriteOk = (dataLogger.append(record) == ESP_OK);
-        }
+        const bool eepromWriteOk = storageFresh && storage.writeOk;
+        if (storageQueue != nullptr) xQueueOverwrite(storageQueue, &record);
         if (networkQueue != nullptr) {
             LightingTelemetry lighting = {};
             const bool lightFresh = lightQueue != nullptr &&
@@ -253,6 +288,9 @@ void telemetryTask(void *)
             xQueueOverwrite(networkQueue, &frame);
         }
 
+        const TickType_t monitorNow = xTaskGetTickCount();
+        if (static_cast<TickType_t>(monitorNow - lastMonitor) < pdMS_TO_TICKS(kMonitorPeriodMs)) continue;
+        lastMonitor = monitorNow;
         const char *phase = phaseName(snapshot.state);
         const char *eepromStatus = !dataLoggerReadyForTelemetry ? "MISSING"
                                                                 : (eepromWriteOk ? "OK" : "WRITE_ERROR");
@@ -286,7 +324,7 @@ void telemetryTask(void *)
                      static_cast<double>(record.busVoltageVolts),
                      static_cast<double>(record.currentMilliamps));
         } else if (powerMonitorReadyForTelemetry) {
-            ESP_LOGW(TAG, "INA226  READ_ERROR | %s", esp_err_to_name(powerErr));
+            ESP_LOGW(TAG, "INA226  DATA_UNAVAILABLE | read failed, pending or stale");
         } else {
             ESP_LOGI(TAG, "INA226  MISSING");
         }
@@ -326,12 +364,10 @@ uint32_t rampDuty(uint32_t current, uint32_t target)
 void controlTask(void *)
 {
     const TickType_t relaySettle = pdMS_TO_TICKS(100);
-    const TickType_t stopDebounce = pdMS_TO_TICKS(200);
 
     ControlState state = ControlState::Locked;
 
     bool relayOn = false;
-    bool stopTiming = false;
     uint32_t duty = 0;
     float filteredThrottle = 0.0F;
     float lastTiltDegrees = 0.0F;
@@ -339,7 +375,6 @@ void controlTask(void *)
     const char *faultReason = "";
 
     TickType_t relaySince = 0;
-    TickType_t stopSince = 0;
 
     auto triggerSafetyFault = [&](const char *operation, esp_err_t cause) {
         if (state == ControlState::Fault) {
@@ -448,6 +483,17 @@ void controlTask(void *)
         }
     }
 
+    storageQueue = xQueueCreate(1, sizeof(TelemetryRecord));
+    storageStatusQueue = xQueueCreate(1, sizeof(StorageSnapshot));
+    if (storageQueue == nullptr || storageStatusQueue == nullptr ||
+        xTaskCreate(storageTask, "vehicle_storage", 4096, nullptr, 2, nullptr) != pdPASS) {
+        if (storageQueue != nullptr) vQueueDelete(storageQueue);
+        if (storageStatusQueue != nullptr) vQueueDelete(storageStatusQueue);
+        storageQueue = nullptr;
+        storageStatusQueue = nullptr;
+        ESP_LOGE(TAG, "Storage task unavailable; live telemetry continues without power readings/logging");
+    }
+
     telemetryQueue = xQueueCreate(1, sizeof(TelemetrySnapshot));
     if (telemetryQueue == nullptr) {
         ESP_LOGE(TAG, "Could not create telemetry queue; local control continues");
@@ -485,7 +531,6 @@ void controlTask(void *)
                     duty = 0;
                     relayOn = false;
                     filteredThrottle = 0;
-                    stopTiming = false;
                     if (state != ControlState::Fault) state = ControlState::SensorWait;
                     ESP_LOGW(TAG, "MPU RECOVERING: motor stopped; require stable samples within 200 ms");
                 }
@@ -495,7 +540,6 @@ void controlTask(void *)
                 rollValid = false;
             } else if (state == ControlState::SensorWait) {
                 state = ControlState::Locked;
-                stopTiming = false;
                 ESP_LOGI(TAG, "MPU RECOVERED: return throttle <=2%% to re-arm immediately");
             }
         }
@@ -524,12 +568,9 @@ void controlTask(void *)
 
         if (state != ControlState::Fault && state != ControlState::SensorWait) {
             if (throttle <= kZeroThrottle) {
-                if (!relayOn) filteredThrottle = 0.0F;
-                if (relayOn && !stopTiming) {
-                    stopSince = now;
-                    stopTiming = true;
-                }
-                if (relayOn && static_cast<TickType_t>(now - stopSince) >= stopDebounce) {
+                // Stop on the first valid low-throttle sample, bypassing the ramp.
+                filteredThrottle = 0.0F;
+                if (relayOn || duty != 0) {
                     requireOk(motor.setMotorDutyPercent(0), "stop PWM");
                     duty = 0;
                     filteredThrottle = 0.0F;
@@ -537,15 +578,14 @@ void controlTask(void *)
                     relayOn = false;
                     if (state != ControlState::Fault) {
                         state = ControlState::Ready;
+                        ESP_LOGI(TAG, "STOP: throttle <=2%% | PWM=0%% | relay command=OFF");
                     }
-                    stopTiming = false;
                 }
                 if (state == ControlState::Locked) {
                     state = ControlState::Ready;
                     ESP_LOGI(TAG, "ARMED: zero throttle detected; throttle may now start motor.");
                 }
             } else {
-                stopTiming = false;
                 const int boundedRaw = raw < DEMO_THROTTLE_ADC_MIN ? DEMO_THROTTLE_ADC_MIN :
                                        raw > DEMO_THROTTLE_ADC_MAX ? DEMO_THROTTLE_ADC_MAX : raw;
                 const float target = (boundedRaw - DEMO_THROTTLE_ADC_MIN) * 1000.0F /
@@ -595,7 +635,7 @@ void controlTask(void *)
         }
         lastServoUpdate = servoNow;
 
-        // D. Chu kỳ 1 giây: gửi ảnh chụp trạng thái sang task telemetry.
+        // Live state every 200 ms, or immediately on a control-state transition.
         if (state != lastReportedState ||
             static_cast<TickType_t>(now - lastLog) >= pdMS_TO_TICKS(kTelemetryPeriodMs)) {
             if (telemetryQueue != nullptr) {
