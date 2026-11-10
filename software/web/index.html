@@ -69,6 +69,34 @@
       </article>
     </section>
 
+    <section class="panel lighting-panel" aria-labelledby="lighting-title">
+      <div class="panel-heading">
+        <div><p class="eyebrow">ĐÈN PHA THÍCH ỨNG</p><h2 id="lighting-title">Ánh sáng và hướng chiếu</h2></div>
+        <span id="lighting-freshness" class="metric-footnote">Chưa có dữ liệu</span>
+      </div>
+      <div class="lighting-grid">
+        <article>
+          <h3>Đèn pha</h3>
+          <strong id="headlight-state" class="metric-value phase-value">—</strong>
+          <p id="ambient-reading" class="metric-footnote">Chưa có số đo ánh sáng</p>
+          <p id="headlight-duty" class="metric-footnote">Lệnh độ sáng: —</p>
+        </article>
+        <article>
+          <h3>Servo SG90</h3>
+          <strong id="servo-angle" class="metric-value">—</strong>
+          <meter id="servo-meter" min="0" max="180" value="90" aria-label="Góc lệnh servo, độ"></meter>
+          <p id="servo-status" class="metric-footnote">Chưa có dữ liệu</p>
+          <p id="servo-target" class="metric-footnote">Góc mục tiêu: —</p>
+        </article>
+        <article>
+          <h3>Góc nghiêng ngang</h3>
+          <strong id="roll-angle" class="metric-value">—</strong>
+          <p class="metric-footnote">Dấu âm/dương theo chiều lắp MPU6050.</p>
+        </article>
+      </div>
+      <p class="metric-footnote">Góc servo và độ sáng là lệnh phần mềm; chưa có cảm biến xác nhận chuyển động hoặc ánh sáng thực tế.</p>
+    </section>
+
     <section class="panel map-panel" aria-labelledby="map-title">
       <div class="panel-heading">
         <div><p class="eyebrow">LIVE GPS</p><h2 id="map-title">Vị trí xe</h2></div>

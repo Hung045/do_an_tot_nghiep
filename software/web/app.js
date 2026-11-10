@@ -2,11 +2,11 @@
 
 const MAX_SAMPLES = 60;
 const STALE_AFTER_SECONDS = 5;
-const VALID_PHASES = ["LOCKED", "READY", "RELAY_WAIT", "RUNNING", "FAULT_LOCKED"];
+const VALID_PHASES = ["LOCKED", "READY", "RELAY_WAIT", "RUNNING", "SENSOR_WAIT", "FAULT_LOCKED"];
 const VALID_EVENTS = ["crash_detected", "power_warning", "sensor_fault"];
 const PHASE_LABELS = {
   LOCKED: "Chờ về ga 0", READY: "Sẵn sàng", RELAY_WAIT: "Chuẩn bị chạy",
-  RUNNING: "Đang chạy", FAULT_LOCKED: "Khóa an toàn"
+  RUNNING: "Đang chạy", SENSOR_WAIT: "Chờ MPU phục hồi", FAULT_LOCKED: "Khóa an toàn"
 };
 const samples = [];
 const brokerHost = location.hostname || "127.0.0.1";
@@ -52,6 +52,7 @@ function updateGpsFreshness() {
   document.body.classList.toggle("sensors-stale", stale);
   if (gpsMarker) gpsMarker.setOpacity(stale || !lastSystemData.gps_valid ? 0.45 : 1);
   if (stale) {
+    show("lighting-freshness", "Dữ liệu cũ — chờ ESP32");
     show("gps-summary", "Dữ liệu cũ");
     show("gps-status", "Chờ cập nhật từ ESP32");
     if (gpsMap) show("map-status", "Mất cập nhật GPS — điểm trên bản đồ là vị trí nhận trước đó.");
@@ -160,12 +161,13 @@ function validateTelemetry(data) {
     Number.isInteger(data.raw) && data.raw >= 0 && data.raw <= 4095 &&
     Number.isInteger(data.uptime_ms) && data.uptime_ms >= 0 &&
     typeof data.relay_cmd === "boolean" &&
+    (data.fault_reason === undefined || (typeof data.fault_reason === "string" && data.fault_reason.length <= 160)) &&
     VALID_PHASES.includes(data.phase);
 }
 
 function checkCommandState(data) {
   const isOffPhase = data.phase === "LOCKED" || data.phase === "READY" ||
-    data.phase === "FAULT_LOCKED";
+    data.phase === "FAULT_LOCKED" || data.phase === "SENSOR_WAIT";
   const inconsistent =
     (isOffPhase && (data.relay_cmd || data.pwm_pct > 0)) ||
     (data.phase === "RELAY_WAIT" && (!data.relay_cmd || data.pwm_pct > 0)) ||
@@ -188,7 +190,12 @@ function checkCommandState(data) {
   }
 
   if (data.phase === "FAULT_LOCKED") {
-    setAlert("Hệ thống đang khóa an toàn. Xem Monitor để biết nguyên nhân và reset sau khi đã xử lý lỗi.", "danger");
+    setAlert(`Khóa an toàn${data.fault_reason ? ": " + data.fault_reason : ""}. Đọc MPU đã tạm dừng; xử lý nguyên nhân rồi reset.`, "danger");
+    return;
+  }
+
+  if (data.phase === "SENSOR_WAIT") {
+    setAlert("MPU đang phục hồi; động cơ đã dừng. Sau phục hồi cần trả ga về 0 để mở khóa lại.", "warning");
     return;
   }
 
@@ -254,6 +261,41 @@ function renderTelemetry(data) {
   updateFreshness();
 }
 
+function validateLighting(data) {
+  if (data === undefined) return true; // Older firmware has no lamp telemetry.
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  const flags = [data.output_valid, data.fault_blink, data.servo_ready, data.servo_tracking, data.roll_valid];
+  return flags.every(value => typeof value === "boolean") &&
+    Number.isFinite(data.ambient_lux) && data.ambient_lux >= -1 &&
+    Number.isInteger(data.duty_pct) && data.duty_pct >= 0 && data.duty_pct <= 100 &&
+    Number.isFinite(data.roll_deg) && Math.abs(data.roll_deg) <= 180 &&
+    [data.servo_cmd_deg, data.servo_target_deg].every(value => Number.isFinite(value) && value >= 0 && value <= 180) &&
+    (!data.servo_tracking || (data.servo_ready && data.roll_valid));
+}
+
+function renderLighting(data) {
+  if (!data) {
+    show("lighting-freshness", "Firmware chưa gửi dữ liệu đèn");
+    for (const id of ["headlight-state", "servo-angle", "roll-angle"]) show(id, "—");
+    show("ambient-reading", "Chưa có số đo ánh sáng");
+    show("headlight-duty", "Lệnh độ sáng: —");
+    show("servo-status", "Chưa có dữ liệu");
+    show("servo-target", "Góc mục tiêu: —");
+    document.getElementById("servo-meter").value = 90;
+    return;
+  }
+  show("lighting-freshness", "Cập nhật từ ESP32");
+  show("headlight-state", !data.output_valid ? "Không có lệnh hợp lệ" : data.fault_blink
+    ? "Nhấp nháy cảnh báo" : data.ambient_lux < 0 ? "Bật dự phòng" : data.duty_pct > 0 ? "Bật" : "Tắt");
+  show("ambient-reading", data.ambient_lux < 0 ? "BH1750: chưa có số đo hợp lệ" : `Ánh sáng: ${data.ambient_lux.toFixed(1)} lux`);
+  show("headlight-duty", data.output_valid ? `Lệnh độ sáng: ${data.duty_pct}%` : "Lệnh độ sáng: không xác nhận");
+  show("servo-angle", data.servo_ready ? `${data.servo_cmd_deg.toFixed(1)}°` : "—");
+  document.getElementById("servo-meter").value = data.servo_ready ? data.servo_cmd_deg : 90;
+  show("servo-status", !data.servo_ready ? "PWM chưa sẵn sàng / lỗi" : data.servo_tracking ? "Bám theo góc nghiêng" : "Giữ / trở về giữa");
+  show("servo-target", data.servo_ready ? `Góc mục tiêu: ${data.servo_target_deg.toFixed(1)}°` : "Góc mục tiêu: —");
+  show("roll-angle", data.roll_valid ? `${data.roll_deg.toFixed(1)}°` : "—");
+}
+
 function validateSystemTelemetry(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   const flags = [data.mpu_available, data.gps_available,
@@ -261,7 +303,13 @@ function validateSystemTelemetry(data) {
   const coordinatesValid = !data.gps_valid ||
     (Number.isFinite(data.latitude_deg) && data.latitude_deg >= -90 && data.latitude_deg <= 90 &&
      Number.isFinite(data.longitude_deg) && data.longitude_deg >= -180 && data.longitude_deg <= 180);
-  return flags.every(value => typeof value === "boolean") && coordinatesValid &&
+  return flags.every(value => typeof value === "boolean") && coordinatesValid && validateLighting(data.lighting) &&
+    (data.mpu_valid === undefined || (typeof data.mpu_valid === "boolean" &&
+      (!data.mpu_valid || (data.mpu_available && Number.isFinite(data.tilt_deg))))) &&
+    (data.eeprom_write_ok === undefined || (typeof data.eeprom_write_ok === "boolean" &&
+      (!data.eeprom_write_ok || data.eeprom_available))) &&
+    (data.power_valid === undefined || (typeof data.power_valid === "boolean" &&
+      (!data.power_valid || (data.power_available && Number.isFinite(data.bus_voltage_v) && Number.isFinite(data.current_ma))))) &&
     (!data.gps_valid || data.gps_available) &&
     (data.satellites == null || (Number.isInteger(data.satellites) && data.satellites >= 0)) &&
     (data.speed_mps == null || (Number.isFinite(data.speed_mps) && data.speed_mps >= 0)) &&
@@ -271,22 +319,42 @@ function validateSystemTelemetry(data) {
 }
 
 function renderSystemTelemetry(data) {
+  renderLighting(data.lighting);
   lastSystemReceived = performance.now();
   lastSystemData = data;
   document.body.classList.remove("sensors-stale");
-  show("mpu-status", data.mpu_available ? "Đã kết nối" : "Không phát hiện");
-  show("tilt", data.mpu_available && data.tilt_deg !== null
+  const mpuValid = data.mpu_available && data.mpu_valid !== false && Number.isFinite(data.tilt_deg);
+  show("mpu-status", !data.mpu_available ? "Không phát hiện" : !mpuValid
+    ? (document.body.dataset.phase === "FAULT_LOCKED" ? "Tạm dừng đọc do khóa an toàn" : "MPU đang lỗi / phục hồi")
+    : data.mpu_valid === undefined ? "Chưa xác nhận số đo (firmware cũ)" : "Đọc dữ liệu thành công");
+  show("tilt", mpuValid
     ? `${data.tilt_deg.toFixed(1)}°` : "—");
-  show("gps-status", data.gps_available ? "Đã khởi tạo" : "Không phát hiện");
-  show("gps-summary", !data.gps_available ? "KHÔNG CÓ" : data.gps_valid
+  const gpsStates = {
+    INIT_ERROR: ["LỖI UART", "Không khởi tạo được cổng GPS"],
+    NO_DATA: ["CHƯA CÓ DỮ LIỆU", "Kiểm tra nguồn, GND và TX GPS → D16"],
+    INVALID_NMEA: ["DỮ LIỆU KHÔNG HỢP LỆ", "Có byte UART; kiểm tra baud 9600 và dây tín hiệu"],
+    NO_NAV: ["CHƯA CÓ GGA/RMC", "Nhận NMEA nhưng chưa có bản tin vị trí hợp lệ"],
+    NO_FIX: ["CHƯA FIX", "Đang nhận GPS; đặt anten nơi thoáng trời"],
+    FIX_OK: [`${data.satellites ?? 0} VỆ TINH`, "Có vị trí hợp lệ"],
+    STALE: ["MẤT DỮ LIỆU GPS", "Không nhận byte GPS trong ít nhất 5 giây"],
+    UART_ERROR: ["LỖI ĐỌC UART", "ESP32 không đọc được cổng GPS"]
+  };
+  const gpsState = Object.hasOwn(gpsStates, data.gps_status) ? gpsStates[data.gps_status] : null;
+  show("gps-status", gpsState ? gpsState[1] : data.gps_available
+    ? "UART đã khởi tạo; chưa có chẩn đoán đường truyền" : "Lỗi khởi tạo UART");
+  show("gps-summary", gpsState ? gpsState[0] : !data.gps_available ? "LỖI UART" : data.gps_valid
     ? `${data.satellites ?? 0} VỆ TINH` : "CHƯA FIX");
   show("gps-fix", !data.gps_available ? "—" : data.gps_valid
     ? `${data.latitude_deg.toFixed(6)}, ${data.longitude_deg.toFixed(6)}`
     : "Chưa có vị trí");
-  show("power-status", data.power_available ? "Đã kết nối" : "Không phát hiện");
-  show("power-reading", data.power_available && data.bus_voltage_v !== null && data.current_ma !== null
+  const powerValid = data.power_available && data.power_valid !== false &&
+    Number.isFinite(data.bus_voltage_v) && Number.isFinite(data.current_ma);
+  show("power-status", !data.power_available ? "Chưa khởi tạo được INA226" : !powerValid
+    ? "Lỗi đọc INA226" : data.power_valid === undefined ? "Chưa có xác nhận số đo (firmware cũ)" : "Đọc dữ liệu thành công");
+  show("power-reading", powerValid
     ? `${data.bus_voltage_v.toFixed(2)} V / ${data.current_ma.toFixed(0)} mA` : "—");
-  show("eeprom-status", data.eeprom_available ? "Sẵn sàng" : "Không phát hiện");
+  show("eeprom-status", !data.eeprom_available ? "Không phát hiện" : data.eeprom_write_ok === false
+    ? "Lỗi ghi EEPROM" : data.eeprom_write_ok === true ? "Ghi dữ liệu thành công" : "Chưa xác nhận ghi (firmware cũ)");
   updateMap(data);
   show("payload", JSON.stringify(data, null, 2));
 }

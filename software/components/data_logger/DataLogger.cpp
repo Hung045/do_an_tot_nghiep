@@ -4,7 +4,6 @@
 #include <cstring>
 
 #include "BoardConfig.h"
-#include "driver/i2c.h"
 #include "esp_log.h"
 #include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
@@ -12,7 +11,7 @@
 
 namespace {
 
-constexpr i2c_port_t kI2cPort = I2C_NUM_0;
+constexpr i2c_port_t kI2cPort = DEMO_AUX_I2C_PORT;
 constexpr uint32_t kRecordMagic = 0x314D4C54U;
 constexpr uint16_t kDataStartAddress = 0;
 constexpr uint16_t kRecordSize = 64;
@@ -104,7 +103,11 @@ uint16_t recordAddress(uint32_t index)
 
 esp_err_t DataLogger::initialize()
 {
-    BoardI2c::getMutex();
+    const esp_err_t busErr = BoardI2c::initialize(kI2cPort);
+    if (busErr != ESP_OK) {
+        initialized_ = false;
+        return busErr;
+    }
 
     constexpr size_t kScanChunkSize = 256;
     constexpr size_t kDataSize = kRecordCapacity * kRecordSize;
@@ -181,7 +184,7 @@ esp_err_t DataLogger::append(const TelemetryRecord &record)
     putFloat(data + 20, record.busVoltageVolts);
     putFloat(data + 24, record.currentMilliamps);
     data[28] = record.gps.valid ? 1U : 0U;
-    data[29] = (record.tiltDegrees >= 60.0F) ? 1U : 0U;
+    data[29] = record.crashDetected ? 1U : 0U;
     putDouble(data + 32, record.gps.latitudeDegrees);
     putDouble(data + 40, record.gps.longitudeDegrees);
     putFloat(data + 48, record.gps.speedMetersPerSecond);
@@ -230,6 +233,7 @@ esp_err_t DataLogger::readLatest(TelemetryRecord *record)
     record->busVoltageVolts = getFloat(data + 20);
     record->currentMilliamps = getFloat(data + 24);
     record->gps.valid = data[28] != 0U;
+    record->crashDetected = data[29] != 0U;
     record->gps.latitudeDegrees = getDouble(data + 32);
     record->gps.longitudeDegrees = getDouble(data + 40);
     record->gps.speedMetersPerSecond = getFloat(data + 48);
@@ -244,7 +248,7 @@ esp_err_t DataLogger::readBytes(uint16_t address, uint8_t *data, size_t length)
         return ESP_ERR_INVALID_ARG;
     }
 
-    BoardI2c::LockGuard lock(pdMS_TO_TICKS(250));
+    BoardI2c::LockGuard lock(kI2cPort, pdMS_TO_TICKS(250));
     if (!lock.isLocked()) {
         return ESP_ERR_TIMEOUT;
     }
@@ -253,7 +257,7 @@ esp_err_t DataLogger::readBytes(uint16_t address, uint8_t *data, size_t length)
         static_cast<uint8_t>(address >> 8),
         static_cast<uint8_t>(address & 0xFFU),
     };
-    return i2c_master_write_read_device(
+    return BoardI2c::writeRead(
         kI2cPort,
         DEMO_AT24C256_ADDRESS,
         addressBytes,
@@ -284,12 +288,12 @@ esp_err_t DataLogger::writeBytes(
         std::memcpy(transaction + 2, data, chunkLength);
 
         {
-            BoardI2c::LockGuard lock(pdMS_TO_TICKS(250));
+            BoardI2c::LockGuard lock(kI2cPort, pdMS_TO_TICKS(250));
             if (!lock.isLocked()) {
                 return ESP_ERR_TIMEOUT;
             }
 
-            esp_err_t err = i2c_master_write_to_device(
+            esp_err_t err = BoardI2c::write(
                 kI2cPort,
                 DEMO_AT24C256_ADDRESS,
                 transaction,
@@ -298,8 +302,10 @@ esp_err_t DataLogger::writeBytes(
             if (err != ESP_OK) {
                 return err;
             }
-            vTaskDelay(pdMS_TO_TICKS(kWriteCycleDelayMs));
         }
+        // The EEPROM is busy internally, but BH1750/INA226 can use I2C1.
+        // Add a tick to avoid truncation/phase shortening the required delay.
+        vTaskDelay(pdMS_TO_TICKS(kWriteCycleDelayMs) + 1);
 
         address = static_cast<uint16_t>(address + chunkLength);
         data += chunkLength;
