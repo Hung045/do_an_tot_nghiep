@@ -82,7 +82,8 @@ function updateMap(data) {
   );
 
   const previous = gpsTrailPoints[gpsTrailPoints.length - 1];
-  if (!previous || previous[0] !== point[0] || previous[1] !== point[1]) {
+  const positionChanged = !previous || previous[0] !== point[0] || previous[1] !== point[1];
+  if (positionChanged) {
     gpsTrailPoints.push(point);
     if (gpsTrailPoints.length > 100) gpsTrailPoints.shift();
     gpsTrail.setLatLngs(gpsTrailPoints);
@@ -91,7 +92,7 @@ function updateMap(data) {
   if (!hasCenteredMap) {
     gpsMap.setView(point, 17);
     hasCenteredMap = true;
-  } else if (followVehicle) {
+  } else if (followVehicle && positionChanged) {
     gpsMap.panTo(point, { animate: true, duration: 0.5 });
   }
 
