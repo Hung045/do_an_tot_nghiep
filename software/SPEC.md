@@ -39,11 +39,6 @@ Ga về 0 không tự xóa `FAULT_LOCKED`. Relay/PWM/góc servo trên web là **
 Dùng cờ hợp lệ và `null` cho số đo không hợp lệ theo schema hiện có; lux -1 là chưa biết.
 Trạng thái ghi EEPROM là kết quả hoàn tất gần nhất, không xác nhận từng bản tin web đã lưu.
 
-Chi tiết: [đấu dây và build](README.md), [chạy web](web/README.md),
-[GPIO và hiệu chỉnh](components/board_config/include/BoardConfig.h),
-[JSON MQTT](components/telemetry_link/TelemetryLink.cpp).
-Không đưa mật khẩu hoặc IP laptop cố định vào SPEC.
-
 ## 3. Kiểm thử trước khi coi là hoàn thành
 
 Các ô dưới đây **chưa xác nhận đạt toàn bộ trên phiên bản hiện tại**.
