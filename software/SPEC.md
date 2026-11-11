@@ -75,8 +75,8 @@ Chưa có phản hồi relay/servo, đo RPM, bảo vệ quá dòng, SOC/SOH ho�
 
 ## 5. Phân công và cập nhật
 
+- Thành viên 1: tích hợp main, động cơ, đèn/servo, MQTT/web. Phụ trách INA226 cần nhóm xác nhận.
 - Thành viên 2: MPU, GPS, EEPROM.
-- Bạn: tích hợp main, động cơ, đèn/servo, MQTT/web. Phụ trách INA226 cần nhóm xác nhận.
 - Đổi hành vi, GPIO hoặc dữ liệu chung: thống nhất → ghi đề xuất trong SPEC → sửa code → kiểm thử → cập nhật kết quả.
 - Sửa bug để đúng SPEC: sửa code và kiểm thử, không cần đổi yêu cầu.
 - Không ghi “đã kiểm thử” chỉ vì build thành công. Commit code và tài liệu liên quan cùng nhau.
