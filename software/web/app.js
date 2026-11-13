@@ -350,8 +350,8 @@ function renderSystemTelemetry(data) {
     : "Chưa có vị trí");
   const powerValid = data.power_available && data.power_valid !== false &&
     Number.isFinite(data.bus_voltage_v) && Number.isFinite(data.current_ma);
-  show("power-status", !data.power_available ? "Chưa khởi tạo được INA226" : !powerValid
-    ? "Lỗi đọc INA226" : data.power_valid === undefined ? "Chưa có xác nhận số đo (firmware cũ)" : "Đọc dữ liệu thành công");
+  show("power-status", !data.power_available ? "Chưa khởi tạo được INA219" : !powerValid
+    ? "Lỗi đọc INA219" : data.power_valid === undefined ? "Chưa có xác nhận số đo (firmware cũ)" : "Đọc dữ liệu thành công");
   show("power-reading", powerValid
     ? `${data.bus_voltage_v.toFixed(2)} V / ${data.current_ma.toFixed(0)} mA` : "—");
   show("eeprom-status", !data.eeprom_available ? "Không phát hiện" : data.eeprom_write_ok === false

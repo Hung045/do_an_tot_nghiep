@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "esp_err.h"
 
 struct PowerReading {
@@ -16,5 +18,8 @@ public:
 
 private:
     bool initialized_ = false;
+    bool hasFilteredCurrent_ = false;
     float currentLsbAmps_ = 0.0F;
+    float filteredCurrentMilliamps_ = 0.0F;
+    uint16_t calibration_ = 0;
 };

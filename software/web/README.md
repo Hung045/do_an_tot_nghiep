@@ -46,7 +46,7 @@ mở dashboard khi kết nối chung một mạng Wi-Fi/LAN.
    trong menuconfig, rồi build và flash lại để ESP32 gửi dữ liệu qua broker
    trong mạng LAN.
 6. ESP32 tạo dữ liệu trực tiếp mỗi 200 ms (5 lần/giây); Monitor vẫn in mỗi giây.
-   INA226 và EEPROM chạy ở task riêng, tối đa khoảng 1 lần/giây. Trạng thái ghi
+   INA219 và EEPROM chạy ở task riêng, tối đa khoảng 1 lần/giây. Trạng thái ghi
    EEPROM là kết quả lần ghi gần nhất, không phải xác nhận từng bản tin web.
    Xoay biến trở và so sánh với Monitor. Dashboard
    hiển thị ga/PWM, trạng thái relay, pha điều khiển, thời gian hoạt động và
@@ -151,12 +151,12 @@ Sau khi flash và cập nhật web, nhấn **Ctrl+F5**.
    không chỉ nhìn lệnh trên web. Đèn 3 V vẫn cần nguồn/driver phù hợp riêng;
    GPIO26 chỉ là tín hiệu điều khiển driver đèn.
 
-## Trạng thái INA226
+## Trạng thái INA219
 
-`power_available` cho biết INA226 khởi tạo thành công; `power_valid` cho biết
+`power_available` cho biết INA219 khởi tạo thành công; `power_valid` cho biết
 lần đọc hiện tại thành công và các giá trị hữu hạn. Khi đọc lỗi, firmware gửi
 `power_valid:false`, `bus_voltage_v:null`, `current_ma:null`; web hiện
-"Lỗi đọc INA226" và không hiển thị số 0 giả. Giá trị 0 V/0 mA đọc thành công
+"Lỗi đọc INA219" và không hiển thị số 0 giả. Giá trị 0 V/0 mA đọc thành công
 vẫn được hiển thị bình thường, nhưng không xác nhận đường đo tải đã nối đúng.
 Số đo dòng còn phụ thuộc cấu hình shunt đúng với module.
 Firmware cũ thiếu `power_valid` được ghi rõ là chưa có xác nhận số đo.
