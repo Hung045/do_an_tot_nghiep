@@ -1,4 +1,4 @@
-﻿#include "BoardConfig.h"
+#include "BoardConfig.h"
 
 #include <atomic>
 #include <algorithm>
@@ -87,7 +87,7 @@ esp_err_t initialize(i2c_port_t port)
         return err;
     }
     ESP_LOGI("BoardI2c", "I2C%d new master driver %s: SDA=%d SCL=%d, %lu Hz",
-             static_cast<int>(port), isMpu ? "MPU6050" : "BH1750/EEPROM/INA226",
+             static_cast<int>(port), isMpu ? "MPU6050" : "BH1750/EEPROM/INA219",
              config.sda_io_num, config.scl_io_num,
              static_cast<unsigned long>(DEMO_I2C_FREQUENCY_HZ));
     return ESP_OK;

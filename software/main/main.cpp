@@ -1,4 +1,4 @@
-﻿#include <cmath>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <atomic>
@@ -320,13 +320,13 @@ void telemetryTask(void *)
                  static_cast<unsigned long>(lightDuty));
         ESP_LOGI(TAG, "EEPROM  %s", eepromStatus);
         if (powerValid) {
-            ESP_LOGI(TAG, "INA226  OK | %.2f V | %.0f mA",
+            ESP_LOGI(TAG, "INA219  OK | %.2f V | %.0f mA",
                      static_cast<double>(record.busVoltageVolts),
                      static_cast<double>(record.currentMilliamps));
         } else if (powerMonitorReadyForTelemetry) {
-            ESP_LOGW(TAG, "INA226  DATA_UNAVAILABLE | read failed, pending or stale");
+            ESP_LOGW(TAG, "INA219  DATA_UNAVAILABLE | read failed, pending or stale");
         } else {
-            ESP_LOGI(TAG, "INA226  MISSING");
+            ESP_LOGI(TAG, "INA219  MISSING");
         }
 
         ESP_LOGI(TAG, "SERVO   %s | command=%.1f deg",
@@ -421,17 +421,13 @@ void controlTask(void *)
     if (!crashDetectorReady) {
         const esp_err_t missingCause = err == ESP_OK ? ESP_ERR_NOT_FOUND : err;
         ESP_LOGW(TAG, "MPU6050 unavailable: %s", esp_err_to_name(missingCause));
-#if CONFIG_DEMO_REQUIRE_MPU6050
         triggerSafetyFault("MPU6050 required but unavailable", missingCause);
-#else
-        ESP_LOGW(TAG, "BENCH TEST: motor is allowed without MPU6050");
-#endif
     }
 
     err = powerMonitor.initialize();
     const bool powerMonitorReady = (err == ESP_OK);
     if (!powerMonitorReady) {
-        ESP_LOGW(TAG, "INA226 unavailable: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "INA219 unavailable: %s", esp_err_to_name(err));
     }
 
     err = gpsTracker.initialize();
@@ -517,7 +513,8 @@ void controlTask(void *)
         bool crashDetected = false;
 
         // A latched fault pauses MPU traffic until reset instead of hammering a failed bus.
-        err = state == ControlState::Fault ? ESP_ERR_INVALID_STATE :
+        err = (!crashDetectorReady || state == ControlState::Fault)
+            ? ESP_ERR_INVALID_STATE :
             crashDetector.update(&tiltDegrees, &crashDetected);
         bool rollValid = err == ESP_OK && crashDetector.isAvailable();
         const float rollDegrees = rollValid ? crashDetector.rollDegrees() : 0.0F;

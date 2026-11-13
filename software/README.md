@@ -1,5 +1,10 @@
 # ESP32 vehicle safety demo
 
+The integrated firmware always requires the MPU6050 for motor operation. If
+the MPU6050 is missing or fails, PWM and relay are locked off; there is no
+compile-time motor-only bypass. Return throttle to <=2% to arm, increase to
+>=5% to start, and return to <=2% to stop. There is no overcurrent shutdown.
+
 This is the firmware workspace for the ESP32 DOIT DevKit V1 graduation-project
 mock-up. It is an early prototype, not a complete or certified vehicle safety
 system.
@@ -12,13 +17,13 @@ software/
 ├── sdkconfig.defaults
 ├── main/
 │   ├── CMakeLists.txt           Dependencies for the app component
-│   └── main.cpp                 app_main runs a minimal module test
+│   └── main.cpp                 Integrated vehicle tasks and control logic
 └── components/
     ├── board_config/            Shared default GPIO and peripheral settings
     ├── crash_detector/          MPU6050 tilt measurement and crash threshold
     ├── motor_controller/        Throttle ADC, motor PWM, and relay
     ├── headlight_controller/    Headlight brightness and adaptive SG90 steering
-    ├── power_monitor/           INA226 register driver and configurable shunt calibration
+    ├── power_monitor/           INA219 register driver and configurable shunt calibration
     ├── gps_tracker/             NEO-6M UART/NMEA RMC+GGA reader
     ├── data_logger/             AT24C256 CRC-protected circular telemetry log
     ├── telemetry_link/          Wi-Fi and MQTT telemetry/event publishing
@@ -28,7 +33,7 @@ software/
 Each hardware/feature component owns its `CMakeLists.txt`, public headers in
 `include/`, and implementation source. `board_config` also initializes the two
 hardware I2C buses; `project_types` is header-only. Test modules directly from `main/main.cpp`;
-there are no separate example projects or selectable test modes.
+there are no separate example projects or motor-only test modes.
 
 ## Current main: integrated vehicle test
 
@@ -39,7 +44,7 @@ priorities; ESP-IDF also runs its own Wi-Fi/MQTT tasks):
 | --- | --- | --- |
 | `vehicle_control` | MPU6050, throttle, safety lock, motor PWM/relay and SG90 | target 20 ms / 5 |
 | `vehicle_light` | BH1750 and headlight, including fault blinking | 100 ms delay between updates / 4 |
-| `vehicle_telemetry` | GPS, INA226, EEPROM and Monitor logs | GPS polled between snapshots (normally 100 ms); snapshot every second / 3 |
+| `vehicle_telemetry` | GPS, INA219, EEPROM and Monitor logs | GPS polled between snapshots (normally 100 ms); snapshot every second / 3 |
 | `vehicle_network` | Wi-Fi startup and MQTT publishing | waits for queued snapshots / 2 |
 
 Network writes run only in `vehicle_network`. A one-element queue replaces
@@ -48,7 +53,7 @@ skipped before publishing; an already-started socket write cannot be recalled.
 Individual MQTT network operations use a 2 s timeout, which is not a guarantee
 of total end-to-end delivery latency. Slow sends log `MQTT send=... ms`.
 GPS/EEPROM/logs and headlight work therefore do not wait on MQTT socket writes.
-MPU6050 uses I2C0 with its own mutex. BH1750, EEPROM and INA226 share I2C1
+MPU6050 uses I2C0 with its own mutex. BH1750, EEPROM and INA219 share I2C1
 and a separate mutex. EEPROM releases the bus during its internal write cycle.
 Task periods remain targets, not hard real-time guarantees.
 
@@ -78,7 +83,7 @@ LR7843 output appearing near supply voltage at low duty. Compare settled
 10%, 20%, and 30% duty readings and motor response; a DC meter does not
 verify waveform quality. This shared frequency also applies to the headlight
 driver when it is initialized. The current main integrates motor control,
-MPU6050 crash detection, GPS, AT24C256 logging, INA226 power measurement,
+MPU6050 crash detection, GPS, AT24C256 logging, INA219 power measurement,
 headlight output, Wi-Fi, MQTT, and the local web dashboard.
 
 `main/main.cpp` starts with relay OFF and PWM zero. Return throttle to 0-2%
@@ -106,17 +111,15 @@ alongside the relay and PWM commands and
 LOCKED/READY/RELAY_WAIT/RUNNING/FAULT_LOCKED state.
 Command values are not physical feedback from the relay contacts or PWM pin.
 Live motor, MPU and lighting snapshots are queued every 200 ms (5 Hz), plus
-control-state changes. A separate low-priority storage task reads INA226 and
+control-state changes. A separate low-priority storage task reads INA219 and
 writes EEPROM at most once per second; its I2C waits do not block live telemetry.
 Power readings older than 2.5 seconds are invalidated. EEPROM write status is
 the latest completed write result, not an acknowledgement of each live frame.
 Storage and network queues each retain only the newest pending sample.
 MQTT connection failures still interrupt web updates; 200 ms is the production
 interval, not a guaranteed end-to-end delivery time.
-Missing modules are reported through logs and telemetry. With
-`DEMO_REQUIRE_MPU6050` enabled (the default), a missing MPU6050 locks motor
-PWM and relay off while networking and telemetry continue. Disable it only
-for an identified motor bench test.
+Missing modules are reported through logs and telemetry. A missing MPU6050
+always locks motor PWM and relay off while networking and telemetry continue.
 
 Initially verify all commands with motor power disconnected. Full throttle
 now commands 100% duty; there is no motor current limit. Fit an appropriately rated flyback diode and
@@ -134,7 +137,7 @@ one valid low-throttle sample produces READY, and returning to low throttle
 stops output. EN/RESET restarts the startup lock. Software cannot guarantee
 relay state before GPIO initialization; verify the hardware default state.
 
-MPU6050 has a dedicated board I2C bus guard; BH1750, INA226 and EEPROM share
+MPU6050 has a dedicated board I2C bus guard; BH1750, INA219 and EEPROM share
 the auxiliary bus guard. Test each module alone, then verify that a missing module is
 reported without publishing a plausible-looking fake measurement.
 
@@ -217,19 +220,19 @@ actual board and modules before wiring.
 | SG90 positional servo signal | GPIO23 (LEDC timer 2/channel 2, 50 Hz) |
 | MPU6050 SDA | GPIO21 |
 | MPU6050 SCL | GPIO22 |
-| BH1750 + AT24C256 + INA226 SDA (I2C1) | GPIO18 |
-| BH1750 + AT24C256 + INA226 SCL (I2C1) | GPIO19 |
+| BH1750 + AT24C256 + INA219 SDA (I2C1) | GPIO18 |
+| BH1750 + AT24C256 + INA219 SCL (I2C1) | GPIO19 |
 | NEO-6M TX → ESP32 RX | GPIO16 / UART2 |
 | NEO-6M RX ← ESP32 TX | GPIO17 / UART2 |
 
-MPU6050 alone uses I2C0 on GPIO21/22. BH1750, INA226 and AT24C256 share
+MPU6050 alone uses I2C0 on GPIO21/22. BH1750, INA219 and AT24C256 share
 I2C1 on GPIO18/19. Both buses run at 100 kHz and have independent mutexes.
 Before flashing this pin-map change, turn power off and move the auxiliary
 modules' SDA/SCL wires from GPIO21/22 to GPIO18/19. Do not bridge the buses.
 Keep a common ground and suitable pull-ups to 3.3 V on each bus; account for
 pull-ups already fitted to modules. ESP32 internal pull-ups alone may be too weak.
 
-Default I2C addresses in `BoardConfig.h` assume MPU6050 AD0 low (0x68), INA226
+Default I2C addresses in `BoardConfig.h` assume MPU6050 AD0 low (0x68), INA219
 A0/A1 strapped for 0x40, and AT24C256 A0-A2 grounded (0x50); verify the actual
 module straps before wiring. BH1750 is probed at 0x23 and then 0x5C.
 AT24C256 uses 32 KiB capacity, 64-byte pages, and
@@ -239,30 +242,44 @@ After rewiring, test with motor load power disconnected:
 
 1. Monitor should report I2C0 on SDA21/SCL22 and I2C1 on SDA18/SCL19.
 2. Confirm MPU6050 and EEPROM are available, and BH1750 lux changes when covered.
-   INA226 may remain MISSING until installed; its readings remain unavailable.
+   INA219 may remain MISSING until installed; its readings remain unavailable.
 3. Tilt the MPU6050 to verify the safety lock, then reset with throttle at zero.
 4. Verify EEPROM records can be read after reset and GPS obtains a valid fix.
 5. To test bus separation, power off, disconnect auxiliary modules, and restart.
    MPU6050 should still be detected. Restore wiring with power off afterwards.
 
-The INA226 module's current calibration depends on the value printed on its
+The INA219 module's current calibration depends on the value printed on its
 onboard shunt resistor. Confirm that marking before using current and power
 readings; a generic "20 A" module label is not enough to select a safe,
-accurate calibration. The fitted module is marked R020 (20 mOhm); the code uses a
-4 A measurement range (80 mV across the shunt). This is measurement scaling,
+accurate calibration. The fitted module is marked R100 (100 mOhm); the code uses a
+3.2 A measurement range (320 mV across the shunt). This is measurement scaling,
 not motor current protection or a verified continuous-current rating of the board.
-The INA226 shunt input range of about 81.92 mV corresponds to about 4.096 A
-with this resistor; currents beyond the configured range cannot be trusted.
-See the [TI INA226 datasheet](https://www.ti.com/lit/ds/symlink/ina226.pdf).
-Update `DEMO_INA226_SHUNT_MICRO_OHMS` and
-`DEMO_INA226_MAX_CURRENT_MILLIAMPS` in `BoardConfig.h` to match the exact module
+The INA219 PGA is configured for +/-320 mV, with a calibrated current range
+of approximately +/-3.2 A. Currents beyond the calibrated range are not valid.
+Both bus and shunt ADCs average 64 samples inside the INA219 (configuration
+0x3F77), about 34.05 ms each or 68.1 ms per continuous measurement cycle.
+This reduces PWM sampling variation without adding a delay to motor control.
+Monitor retains its 1 Hz update rate; no multi-second software smoothing is used.
+Current output also uses a 35% exponential moving average between valid
+samples. A true zero-current sample or reversal of current direction resets
+that filter immediately, so an old current is not shown after the relay opens.
+Bus voltage uses 4 mV per bit after removing the three status/reserved bits;
+current calibration uses 0.04096/(Current_LSB * shunt), and power uses 20 *
+Current_LSB. Overflow, incomplete conversions and lost calibration invalidate
+the sample. INA219 has no INA226-style device ID register.
+The bus voltage is measured at IN- relative to GND. The chip's maximum bus
+input is 26 V even when the configuration selects the 32 V register range.
+Keep VCC at 3.3 V for this ESP32 setup; do not connect battery voltage to VCC.
+See the [TI INA219 datasheet](https://www.ti.com/lit/ds/symlink/ina219.pdf).
+Update `DEMO_INA219_SHUNT_MICRO_OHMS` and
+`DEMO_INA219_MAX_CURRENT_MILLIAMPS` in `BoardConfig.h` to match the exact module
 before connecting the load. The driver rejects configurations whose maximum
-current would exceed the INA226 shunt-voltage range. State of charge currently
+current would exceed the INA219 shunt-voltage range. State of charge currently
 reports unknown (`-1`); it needs a calibrated 3S battery model and is not
 inferred by linear voltage scaling.
 
-INA226 initialization and each sample's validity are separate. Monitor prints
-`INA226=READ_ERROR` with the driver error on a failed read instead of zero volts.
+INA219 initialization and each sample's validity are separate. Monitor prints
+`INA219=READ_ERROR` with the driver error on a failed read instead of zero volts.
 MQTT keeps `power_available` for initialization and adds `power_valid` for the
 current sample; invalid voltage/current are JSON `null`. The existing EEPROM
 float fields store NaN for unavailable power readings, preserving the 64-byte

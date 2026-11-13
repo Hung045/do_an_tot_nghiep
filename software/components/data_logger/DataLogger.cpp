@@ -303,7 +303,7 @@ esp_err_t DataLogger::writeBytes(
                 return err;
             }
         }
-        // The EEPROM is busy internally, but BH1750/INA226 can use I2C1.
+        // The EEPROM is busy internally, but BH1750/INA219 can use I2C1.
         // Add a tick to avoid truncation/phase shortening the required delay.
         vTaskDelay(pdMS_TO_TICKS(kWriteCycleDelayMs) + 1);
 

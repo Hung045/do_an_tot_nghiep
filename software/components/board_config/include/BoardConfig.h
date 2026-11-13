@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "driver/gpio.h"
 
@@ -45,13 +45,16 @@
 
 #define DEMO_BH1750_ADDRESS          0x23
 #define DEMO_MPU6050_ADDRESS         0x68
-#define DEMO_INA226_ADDRESS          0x40
+#define DEMO_INA219_ADDRESS          0x40
 #define DEMO_AT24C256_ADDRESS        0x50
 
-// R020 = 20 mOhm. 4 A produces 80 mV (INA226 shunt range: ~81.92 mV).
+// R100 = 100 mOhm. 3.2 A produces 320 mV; INA219 PGA set to +/-320 mV.
 // Measurement scaling only: this does not limit motor current.
-#define DEMO_INA226_SHUNT_MICRO_OHMS 20000
-#define DEMO_INA226_MAX_CURRENT_MILLIAMPS 4000
+#define DEMO_INA219_SHUNT_MICRO_OHMS 100000
+#define DEMO_INA219_MAX_CURRENT_MILLIAMPS 3200
+// Exponential moving-average weight for current Monitor/MQTT values.
+// 35 means a new sample contributes 35%; a zero-current sample resets at once.
+#define DEMO_INA219_CURRENT_FILTER_PERCENT 35
 
 #define DEMO_AT24C256_CAPACITY_BYTES     32768
 #define DEMO_AT24C256_PAGE_SIZE_BYTES    64
