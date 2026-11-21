@@ -11,7 +11,7 @@
 | Đèn | Dưới 30 lux bật, trên 60 lux tắt, ở giữa giữ trạng thái; mất BH1750 thì bật dự phòng; khóa lỗi thì nhấp nháy |
 | Servo | Theo roll MPU; tâm 90°, giới hạn 60–120°; mất dữ liệu hoặc khóa lỗi thì hướng về giữa |
 | GPS | Đọc vị trí, hiển thị bản đồ; phân biệt không có UART, chưa có fix và dữ liệu cũ |
-| INA219 | Đo điện áp/dòng với shunt R100; chưa tính sức khỏe pin hoặc ngắt quá dòng |
+| INA219 | Đo điện áp/dòng với shunt R100; SOC chỉ là ước tính theo điện áp pack 3S, chưa đo SOH hoặc ngắt quá dòng |
 | EEPROM | Lưu vòng 512 bản ghi có CRC, đọc lại sau reset |
 | MQTT/web | Theo dõi trạng thái và cảnh báo; web không điều khiển xe; mất mạng không chặn task điều khiển |
 
@@ -62,7 +62,10 @@ web nhận dữ liệu. Đây chưa phải nghiệm thu độ ổn định toàn
 
 **Chưa giải quyết/kiểm chứng đầy đủ:** timeout MQTT, I2C lỗi khi tích hợp tải,
 INA219 gây lỗi bus và EEPROM báo MISSING trong các lần thử gần đây.
-Chưa có phản hồi relay/servo, đo RPM, bảo vệ quá dòng, SOC/SOH hoặc OTA.
+Ước tính SOC theo điện áp đã có test host nhưng chưa hiệu chuẩn trên pack thật;
+chưa có SOH/dung lượng thực, giám sát từng cell, phản hồi relay/servo, đo RPM,
+bảo vệ quá dòng hoặc OTA. Dashboard đã hỗ trợ endpoint WSS, nhưng chưa triển khai
+domain/broker Internet; cần cấu hình hosting và quyền đọc riêng tư trước khi mở.
 
 **Đề xuất, chưa coi là đã triển khai:**
 

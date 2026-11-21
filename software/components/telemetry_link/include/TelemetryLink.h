@@ -18,6 +18,7 @@ public:
                                bool gpsAvailable,
                                bool powerAvailable,
                                bool powerValid,
+                               float batterySocPercent,
                                bool eepromAvailable,
                                const GpsDiagnostics &gpsDiagnostics,
                                bool mpuValid,

@@ -274,9 +274,12 @@ See the [TI INA219 datasheet](https://www.ti.com/lit/ds/symlink/ina219.pdf).
 Update `DEMO_INA219_SHUNT_MICRO_OHMS` and
 `DEMO_INA219_MAX_CURRENT_MILLIAMPS` in `BoardConfig.h` to match the exact module
 before connecting the load. The driver rejects configurations whose maximum
-current would exceed the INA219 shunt-voltage range. State of charge currently
-reports unknown (`-1`); it needs a calibrated 3S battery model and is not
-inferred by linear voltage scaling.
+current would exceed the INA219 shunt-voltage range. `stateOfChargePercent`
+uses a piecewise voltage estimate calibrated at the configured empty, nominal,
+and full pack voltages. It is a rough 3S estimate, not coulomb counting; load,
+temperature, cell imbalance, and the actual pack chemistry affect accuracy.
+It does not measure state of health, remaining capacity, or individual-cell
+condition. Verify the three voltage thresholds against the actual battery.
 
 INA219 initialization and each sample's validity are separate. Monitor prints
 `INA219=READ_ERROR` with the driver error on a failed read instead of zero volts.

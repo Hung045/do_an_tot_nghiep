@@ -166,6 +166,7 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
                                            bool gpsAvailable,
                                            bool powerAvailable,
                                            bool powerValid,
+                                           float batterySocPercent,
                                            bool eepromAvailable,
                                            const GpsDiagnostics &gpsDiagnostics,
                                            bool mpuValid,
@@ -195,6 +196,7 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
     char tilt[24] = {};
     char voltage[24] = {};
     char current[24] = {};
+    char batterySoc[24] = {};
     const bool gpsFixValid = gpsAvailable && record.gps.valid;
     formatCoordinate(record.gps.latitudeDegrees, gpsFixValid,
                      latitude, sizeof(latitude));
@@ -215,13 +217,19 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
         std::snprintf(voltage, sizeof(voltage), "null");
         std::snprintf(current, sizeof(current), "null");
     }
+    if (powerReadingValid && std::isfinite(batterySocPercent) &&
+        batterySocPercent >= 0.0F && batterySocPercent <= 100.0F) {
+        std::snprintf(batterySoc, sizeof(batterySoc), "%.1f", static_cast<double>(batterySocPercent));
+    } else {
+        std::snprintf(batterySoc, sizeof(batterySoc), "null");
+    }
     const int payloadLength = std::snprintf(
         payload,
         sizeof(payload),
         "{\"uptime_ms\":%lu,\"mpu_available\":%s,\"mpu_valid\":%s,\"tilt_deg\":%s,"
         "\"gps_available\":%s,\"gps_valid\":%s,\"power_available\":%s,\"power_valid\":%s,"
         "\"eeprom_available\":%s,\"eeprom_write_ok\":%s,\"crash_latched\":%s,\"throttle_percent\":%lu,"
-        "\"bus_voltage_v\":%s,\"current_ma\":%s,"
+        "\"bus_voltage_v\":%s,\"current_ma\":%s,\"battery_soc_pct\":%s,"
         "\"latitude_deg\":%s,\"longitude_deg\":%s,"
         "\"speed_mps\":%.2f,\"satellites\":%lu,"
         "\"gps_status\":\"%s\",\"gps_rx_bytes\":%lu,\"gps_nmea_ok\":%lu,"
@@ -240,6 +248,7 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
         static_cast<unsigned long>(record.throttlePercent),
         voltage,
         current,
+        batterySoc,
         latitude,
         longitude,
         static_cast<double>(record.gps.speedMetersPerSecond),

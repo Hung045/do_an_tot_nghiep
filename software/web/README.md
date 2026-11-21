@@ -75,8 +75,23 @@ cùng mạng, router không bật client/AP isolation, Mosquitto đang lắng ng
 trên LAN và firewall cho phép các cổng trên mạng Private.
 
 Chỉ dùng cấu hình anonymous trên mạng nội bộ tin cậy. Không cấu hình
-port-forwarding hoặc mở các cổng này ra Internet; để truy cập từ ngoài nhà
-cần một giải pháp có xác thực và mã hóa riêng.
+port-forwarding hoặc mở các cổng này ra Internet.
+
+## Truy cập qua Internet
+
+Để mở dashboard bằng tên miền từ ngoài mạng LAN, cần triển khai trang trên
+hosting HTTPS và có broker MQTT hỗ trợ WebSocket bảo mật (WSS). Trang tự dùng
+`wss://<hostname>/mqtt` khi mở bằng HTTPS; nếu broker ở host hoặc path khác,
+thêm endpoint không chứa thông tin đăng nhập vào query `broker`, ví dụ:
+`https://<domain>/?broker=wss%3A%2F%2F<broker-host>%2Fmqtt`.
+
+Không đưa mật khẩu vào URL, JavaScript hoặc mã nguồn tĩnh. Endpoint phải được
+giới hạn chỉ đọc topic `vehicle/#`; dữ liệu GPS có thể tiết lộ vị trí xe. Không
+mở broker laptop bằng port-forwarding và không bật anonymous trên Internet.
+Nếu cần dữ liệu riêng tư, đặt dashboard và WebSocket sau cùng một cổng xác thực
+(VPN hoặc access proxy) hoặc dùng backend làm trung gian; trang tĩnh đơn thuần
+không thể giữ bí mật credential được gửi xuống trình duyệt. Cần cấu hình DNS,
+TLS và broker theo nhà cung cấp hosting trước khi URL công khai hoạt động.
 
 Giá trị relay và PWM là lệnh phần mềm, không phải phản hồi phần cứng hay RPM.
 Cảnh báo dữ liệu cũ dựa trên thời gian trình duyệt nhận bản tin hợp lệ gần

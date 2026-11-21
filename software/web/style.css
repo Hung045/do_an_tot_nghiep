@@ -331,6 +331,13 @@ footer {
 .lighting-grid h3 { font-size: .8rem; color: var(--muted); margin: 0 0 12px; }
 .lighting-grid p { line-height: 1.6; }
 .sensors-stale .lighting-grid { opacity: .45; }
+.battery-panel { margin-top: 15px; }
+.battery-reading { width: min(100%, 420px); margin-top: 14px; }
+.battery-reading .metric-value { margin-top: 0; color: var(--teal); }
+.battery-reading meter { height: 9px; margin-top: 9px; }
+.battery-low #battery-soc, .battery-low #battery-status { color: #f3bd55; }
+.battery-low #battery-meter::-webkit-meter-optimum-value { background: #f3bd55; }
+.battery-low #battery-meter::-moz-meter-bar { background: #f3bd55; }
 
 @media (max-width: 760px) {
   .dashboard { padding: 22px 20px; }

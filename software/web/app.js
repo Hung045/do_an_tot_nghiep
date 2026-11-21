@@ -10,7 +10,26 @@ const PHASE_LABELS = {
 };
 const samples = [];
 const brokerHost = location.hostname || "127.0.0.1";
-const brokerUrl = `ws://${brokerHost}:9001`;
+const brokerOverride = new URLSearchParams(location.search).get("broker");
+const brokerUrl = brokerOverride || (location.protocol === "https:"
+  ? `wss://${brokerHost}/mqtt` : `ws://${brokerHost}:9001`);
+let brokerConfigError = "";
+let brokerAddress = "—";
+try {
+  const brokerEndpoint = new URL(brokerUrl);
+  if (brokerEndpoint.protocol !== "ws:" && brokerEndpoint.protocol !== "wss:") {
+    throw new Error("Endpoint broker phải dùng ws:// hoặc wss://.");
+  }
+  if (location.protocol === "https:" && brokerEndpoint.protocol !== "wss:") {
+    throw new Error("Trang HTTPS chỉ được kết nối broker bằng WSS.");
+  }
+  if (brokerEndpoint.username || brokerEndpoint.password) {
+    throw new Error("Không đặt tài khoản broker trong URL.");
+  }
+  brokerAddress = `${brokerEndpoint.host}${brokerEndpoint.pathname}`;
+} catch (error) {
+  brokerConfigError = error.message || "Endpoint broker không hợp lệ.";
+}
 
 const show = (id, value) => {
   document.getElementById(id).textContent = value;
@@ -311,6 +330,8 @@ function validateSystemTelemetry(data) {
       (!data.eeprom_write_ok || data.eeprom_available))) &&
     (data.power_valid === undefined || (typeof data.power_valid === "boolean" &&
       (!data.power_valid || (data.power_available && Number.isFinite(data.bus_voltage_v) && Number.isFinite(data.current_ma))))) &&
+    (data.battery_soc_pct === undefined || data.battery_soc_pct === null ||
+      (Number.isFinite(data.battery_soc_pct) && data.battery_soc_pct >= 0 && data.battery_soc_pct <= 100)) &&
     (!data.gps_valid || data.gps_available) &&
     (data.satellites == null || (Number.isInteger(data.satellites) && data.satellites >= 0)) &&
     (data.speed_mps == null || (Number.isFinite(data.speed_mps) && data.speed_mps >= 0)) &&
@@ -354,6 +375,16 @@ function renderSystemTelemetry(data) {
     ? "Lỗi đọc INA219" : data.power_valid === undefined ? "Chưa có xác nhận số đo (firmware cũ)" : "Đọc dữ liệu thành công");
   show("power-reading", powerValid
     ? `${data.bus_voltage_v.toFixed(2)} V / ${data.current_ma.toFixed(0)} mA` : "—");
+  const batterySocValid = powerValid && Number.isFinite(data.battery_soc_pct) &&
+    data.battery_soc_pct >= 0 && data.battery_soc_pct <= 100;
+  show("battery-soc", batterySocValid ? `${Math.round(data.battery_soc_pct)}%` : "—");
+  document.getElementById("battery-meter").value = batterySocValid ? data.battery_soc_pct : 0;
+  document.getElementById("battery-panel").classList.toggle("battery-low", batterySocValid && data.battery_soc_pct <= 20);
+  show("battery-status", !powerValid ? "Không có số đo hợp lệ" : !batterySocValid
+    ? "Firmware chưa gửi ước tính" : data.battery_soc_pct <= 20 ? "Mức pin thấp · nên sạc" : "Đang cập nhật");
+  show("battery-detail", powerValid
+    ? `${data.bus_voltage_v.toFixed(2)} V · ${data.current_ma.toFixed(0)} mA`
+    : "Chưa có số đo điện áp và dòng.");
   show("eeprom-status", !data.eeprom_available ? "Không phát hiện" : data.eeprom_write_ok === false
     ? "Lỗi ghi EEPROM" : data.eeprom_write_ok === true ? "Ghi dữ liệu thành công" : "Chưa xác nhận ghi (firmware cũ)");
   updateMap(data);
@@ -408,12 +439,15 @@ updateChart();
 updateFreshness();
 setInterval(updateFreshness, 1000);
 
-if (typeof mqtt === "undefined") {
+if (brokerConfigError) {
+  setConnection("Cấu hình broker chưa hợp lệ", "offline");
+  setAlert(brokerConfigError, "danger");
+} else if (typeof mqtt === "undefined") {
   setConnection("Không tải được thư viện MQTT · kiểm tra Internet rồi tải lại.", "offline");
   setAlert("Không thể tải thư viện MQTT.js từ CDN.", "danger");
 } else {
   setConnection("Đang kết nối broker…", "connecting");
-  show("broker-address", `${brokerHost}:9001`);
+  show("broker-address", brokerAddress);
   const client = mqtt.connect(brokerUrl, {
     reconnectPeriod: 2000,
     connectTimeout: 10000,

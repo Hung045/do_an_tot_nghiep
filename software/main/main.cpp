@@ -65,6 +65,7 @@ struct NetworkSnapshot {
     TelemetryRecord record;
     GpsDiagnostics gpsDiagnostics;
     bool powerValid;
+    float batterySocPercent;
     bool eepromWriteOk;
     LightingTelemetry lighting;
 };
@@ -160,7 +161,7 @@ void networkTask(void *)
         if (sampleAgeMs() <= 1500U) {
             systemErr = telemetry.publishTelemetry(
                 frame.record, crashDetectorReadyForTelemetry, gpsTrackerReadyForTelemetry,
-                powerMonitorReadyForTelemetry, frame.powerValid,
+                powerMonitorReadyForTelemetry, frame.powerValid, frame.batterySocPercent,
                 dataLoggerReadyForTelemetry, frame.gpsDiagnostics,
                 snapshot.rollValid, frame.eepromWriteOk, frame.lighting);
         }
@@ -253,6 +254,7 @@ void telemetryTask(void *)
             static_cast<TickType_t>(xTaskGetTickCount() - storage.sampledAt) <= pdMS_TO_TICKS(2500);
         powerReading = storage.power;
         const bool powerValid = storageFresh && storage.powerValid;
+        const float batterySocPercent = powerValid ? storage.power.stateOfChargePercent : -1.0F;
 
         TelemetryRecord record = {};
         record.uptimeMilliseconds = snapshot.uptimeMilliseconds;
@@ -284,7 +286,8 @@ void telemetryTask(void *)
             lighting.rollDegrees = snapshot.rollDegrees;
             lighting.servoDegrees = snapshot.servoDegrees;
             lighting.servoTargetDegrees = snapshot.servoTargetDegrees;
-            const NetworkSnapshot frame = {snapshot, record, gpsDiagnostics, powerValid, eepromWriteOk, lighting};
+            const NetworkSnapshot frame = {
+                snapshot, record, gpsDiagnostics, powerValid, batterySocPercent, eepromWriteOk, lighting};
             xQueueOverwrite(networkQueue, &frame);
         }
 
@@ -320,9 +323,10 @@ void telemetryTask(void *)
                  static_cast<unsigned long>(lightDuty));
         ESP_LOGI(TAG, "EEPROM  %s", eepromStatus);
         if (powerValid) {
-            ESP_LOGI(TAG, "INA219  OK | %.2f V | %.0f mA",
+            ESP_LOGI(TAG, "INA219  OK | %.2f V | %.0f mA | SOC estimate=%.0f%%",
                      static_cast<double>(record.busVoltageVolts),
-                     static_cast<double>(record.currentMilliamps));
+                     static_cast<double>(record.currentMilliamps),
+                     static_cast<double>(powerReading.stateOfChargePercent));
         } else if (powerMonitorReadyForTelemetry) {
             ESP_LOGW(TAG, "INA219  DATA_UNAVAILABLE | read failed, pending or stale");
         } else {

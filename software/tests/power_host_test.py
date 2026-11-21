@@ -67,6 +67,7 @@ int BoardI2c::writeRead(int port,uint8_t addr,const uint8_t* d,size_t n,uint8_t*
 }
 void unknown(const PowerReading& p) {
  assert(std::isnan(p.busVoltageVolts) && std::isnan(p.currentMilliamps) && std::isnan(p.powerMilliwatts));
+ assert(p.stateOfChargePercent==-1.0F);
 }
 int main() {
  PowerMonitor m; PowerReading p={12,100,1200,50};
@@ -115,6 +116,12 @@ int main() {
    failRead=r; assert(m.read(&p)==ESP_ERR_TIMEOUT); unknown(p);
    failRead=-1; assert(m.read(&p)==ESP_OK && std::abs(p.busVoltageVolts-12.0F)<0.001F);
  }
+ regs[2]=(2400<<3)|2; assert(m.read(&p)==ESP_OK && p.stateOfChargePercent==0.0F);
+ regs[2]=(2775<<3)|2; assert(m.read(&p)==ESP_OK && std::abs(p.stateOfChargePercent-50.0F)<0.01F);
+ regs[2]=(3150<<3)|2; assert(m.read(&p)==ESP_OK && p.stateOfChargePercent==100.0F);
+ regs[2]=(2300<<3)|2; assert(m.read(&p)==ESP_OK && p.stateOfChargePercent==0.0F);
+ regs[2]=(3200<<3)|2; assert(m.read(&p)==ESP_OK && p.stateOfChargePercent==100.0F);
+ regs[2]=(3000<<3)|2;
  // Reinitialization failure must not reuse a previous calibration as readiness.
  busError=true; assert(m.initialize()==ESP_FAIL);
  assert(m.read(&p)==ESP_ERR_INVALID_STATE); unknown(p);
@@ -126,7 +133,8 @@ compiler = sys.argv[1] if len(sys.argv) > 1 else shutil.which("g++")
 # Use the actual board calibration instead of a separate mock calibration.
 board_config = (ROOT / "components/board_config/include/BoardConfig.h").read_text(encoding="utf-8")
 for setting in ("DEMO_INA219_SHUNT_MICRO_OHMS", "DEMO_INA219_MAX_CURRENT_MILLIAMPS",
-                "DEMO_INA219_CURRENT_FILTER_PERCENT"):
+                "DEMO_INA219_CURRENT_FILTER_PERCENT", "DEMO_BATTERY_EMPTY_MILLIVOLTS",
+                "DEMO_BATTERY_NOMINAL_MILLIVOLTS", "DEMO_BATTERY_FULL_MILLIVOLTS"):
     match = re.search(r"^#define\s+" + setting + r"\s+(\d+)\s*$", board_config, re.MULTILINE)
     if not match:
         raise SystemExit("Missing board setting: " + setting)

@@ -24,6 +24,22 @@ constexpr uint8_t kCalibrationRegister = 0x05;
 constexpr uint16_t kContinuousShuntAndBusConfig = 0x3F77;
 constexpr float kCurrentFilterAlpha =
     static_cast<float>(DEMO_INA219_CURRENT_FILTER_PERCENT) / 100.0F;
+static_assert(DEMO_BATTERY_EMPTY_MILLIVOLTS < DEMO_BATTERY_NOMINAL_MILLIVOLTS &&
+              DEMO_BATTERY_NOMINAL_MILLIVOLTS < DEMO_BATTERY_FULL_MILLIVOLTS,
+              "Battery voltage calibration must be increasing");
+
+float estimateBatterySocPercent(float voltage)
+{
+    constexpr float emptyVoltage = DEMO_BATTERY_EMPTY_MILLIVOLTS / 1000.0F;
+    constexpr float nominalVoltage = DEMO_BATTERY_NOMINAL_MILLIVOLTS / 1000.0F;
+    constexpr float fullVoltage = DEMO_BATTERY_FULL_MILLIVOLTS / 1000.0F;
+    if (voltage <= emptyVoltage) return 0.0F;
+    if (voltage >= fullVoltage) return 100.0F;
+    if (voltage <= nominalVoltage) {
+        return 50.0F * (voltage - emptyVoltage) / (nominalVoltage - emptyVoltage);
+    }
+    return 50.0F + 50.0F * (voltage - nominalVoltage) / (fullVoltage - nominalVoltage);
+}
 
 esp_err_t writeRegister(uint8_t address, uint16_t value)
 {
@@ -198,6 +214,6 @@ esp_err_t PowerMonitor::read(PowerReading *reading)
     reading->currentMilliamps = filteredCurrentMilliamps_;
     reading->powerMilliwatts =
         static_cast<float>(powerRaw) * currentLsbAmps_ * 20.0F * 1000.0F;
-    reading->stateOfChargePercent = -1.0F;
+    reading->stateOfChargePercent = estimateBatterySocPercent(reading->busVoltageVolts);
     return ESP_OK;
 }
