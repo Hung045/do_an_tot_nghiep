@@ -8,12 +8,10 @@
 
 namespace {
 
-constexpr i2c_port_t kI2cPort = DEMO_AUX_I2C_PORT;
-
 constexpr char TAG[] = "HeadlightController";
 constexpr ledc_mode_t kSpeedMode = LEDC_LOW_SPEED_MODE;
-constexpr ledc_timer_t kTimer = LEDC_TIMER_1;
-constexpr ledc_channel_t kChannel = LEDC_CHANNEL_1;
+constexpr ledc_timer_t kTimer = LEDC_TIMER_2;
+constexpr ledc_channel_t kChannel = LEDC_CHANNEL_2;
 constexpr uint32_t kPwmMaximumDuty = (1U << DEMO_PWM_RESOLUTION_BITS) - 1U;
 
 constexpr uint8_t kBh1750PowerOn = 0x01;
@@ -23,27 +21,32 @@ constexpr float kDarkTurnOnLux = 30.0F;
 constexpr float kBrightTurnOffLux = 60.0F;
 constexpr uint32_t kFaultBlinkHalfPeriodTicks = 12U;
 
+i2c_port_t sActiveBh1750Port = DEMO_MPU_I2C_PORT;
 uint8_t sActiveBh1750Addr = DEMO_BH1750_ADDRESS;
-float sLastValidLux = -1.0F;
+float sLastValidLux = 0.0F;
 TickType_t sLastLuxReadTicks = 0;
 
-bool tryInitBh1750At(uint8_t addr)
+bool tryInitBh1750(i2c_port_t port, uint8_t addr)
 {
+    BoardI2c::initialize(port);
+    BoardI2c::LockGuard lock(port, pdMS_TO_TICKS(100));
+    if (!lock.isLocked()) {
+        return false;
+    }
+
     uint8_t cmd = kBh1750PowerOn;
-    if (BoardI2c::write(kI2cPort, addr, &cmd, 1, pdMS_TO_TICKS(50)) != ESP_OK) {
+    if (BoardI2c::write(port, addr, &cmd, 1, pdMS_TO_TICKS(50)) != ESP_OK) {
         return false;
     }
     vTaskDelay(pdMS_TO_TICKS(10));
     cmd = kBh1750ContHighResMode;
-    return (BoardI2c::write(kI2cPort, addr, &cmd, 1, pdMS_TO_TICKS(50)) == ESP_OK);
+    return (BoardI2c::write(port, addr, &cmd, 1, pdMS_TO_TICKS(50)) == ESP_OK);
 }
 
 } // namespace
 
 esp_err_t HeadlightController::initialize()
 {
-    sLastValidLux = -1.0F;
-    sLastLuxReadTicks = 0;
     ledc_timer_config_t timer = {};
     timer.speed_mode = kSpeedMode;
     timer.duty_resolution = static_cast<ledc_timer_bit_t>(DEMO_PWM_RESOLUTION_BITS);
@@ -72,30 +75,32 @@ esp_err_t HeadlightController::initialize()
         return err;
     }
 
+    const i2c_port_t portsToTry[] = {DEMO_MPU_I2C_PORT, DEMO_AUX_I2C_PORT};
+    const uint8_t addrsToTry[] = {0x23, 0x5C};
+
     bh1750Ready_ = false;
-    const esp_err_t busErr = BoardI2c::initialize(kI2cPort);
-    if (busErr == ESP_OK) {
-        BoardI2c::LockGuard lock(kI2cPort);
-        if (lock.isLocked()) {
-            if (tryInitBh1750At(0x23)) {
-                sActiveBh1750Addr = 0x23;
+    for (i2c_port_t port : portsToTry) {
+        for (uint8_t addr : addrsToTry) {
+            if (tryInitBh1750(port, addr)) {
+                sActiveBh1750Port = port;
+                sActiveBh1750Addr = addr;
                 bh1750Ready_ = true;
-            } else if (tryInitBh1750At(0x5C)) {
-                sActiveBh1750Addr = 0x5C;
-                bh1750Ready_ = true;
+                break;
             }
         }
-    } else {
-        ESP_LOGW(TAG, "Light sensor bus unavailable: %s", esp_err_to_name(busErr));
+        if (bh1750Ready_) {
+            break;
+        }
     }
 
     if (bh1750Ready_) {
-        ESP_LOGI(TAG, "BH1750 initialized at 0x%02X", sActiveBh1750Addr);
+        ESP_LOGI(TAG, "BH1750 initialized on I2C_%d at 0x%02X",
+                 static_cast<int>(sActiveBh1750Port), sActiveBh1750Addr);
         vTaskDelay(pdMS_TO_TICKS(180));
         readAmbientLux(&sLastValidLux);
         sLastLuxReadTicks = xTaskGetTickCount();
     } else {
-        ESP_LOGW(TAG, "BH1750 not detected at 0x23 or 0x5C; headlight defaults to ON");
+        ESP_LOGW(TAG, "BH1750 not detected on I2C0(21/22) or I2C1(18/19); headlight defaults to ON");
         lightOnState_ = true;
     }
 
@@ -119,12 +124,12 @@ esp_err_t HeadlightController::readAmbientLux(float *luxOut)
         return ESP_ERR_INVALID_STATE;
     }
 
-    BoardI2c::LockGuard lock(kI2cPort, pdMS_TO_TICKS(50));
+    BoardI2c::LockGuard lock(sActiveBh1750Port, pdMS_TO_TICKS(50));
     if (!lock.isLocked()) return ESP_ERR_TIMEOUT;
 
     uint8_t rawData[2] = {0, 0};
     esp_err_t err = BoardI2c::read(
-        kI2cPort, sActiveBh1750Addr, rawData, sizeof(rawData), pdMS_TO_TICKS(30));
+        sActiveBh1750Port, sActiveBh1750Addr, rawData, sizeof(rawData), pdMS_TO_TICKS(30));
 
     if (err == ESP_OK) {
         const uint16_t rawCounts = (static_cast<uint16_t>(rawData[0]) << 8) | rawData[1];
@@ -142,9 +147,6 @@ esp_err_t HeadlightController::updateAutoHeadlight(bool isFault, float *luxOut, 
             float sample = -1.0F;
             if (readAmbientLux(&sample) == ESP_OK) {
                 sLastValidLux = sample;
-            } else {
-                // Never present a stale bright reading as a working sensor.
-                sLastValidLux = -1.0F;
             }
             sLastLuxReadTicks = now;
         }
@@ -176,7 +178,6 @@ esp_err_t HeadlightController::updateAutoHeadlight(bool isFault, float *luxOut, 
         }
     } else {
         lightOnState_ = true;
-        currentDuty_ = 100U; // Immediate fallback, not a two-second brightness ramp.
     }
 
     const uint32_t targetDuty = lightOnState_ ? 100U : 0U;
