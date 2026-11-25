@@ -217,7 +217,7 @@ actual board and modules before wiring.
 | Motor driver PWM input | GPIO25 |
 | Headlight MOSFET PWM input | GPIO26 |
 | Relay control input | GPIO27 |
-| SG90 positional servo signal | GPIO23 (LEDC timer 2/channel 2, 50 Hz) |
+| SG90 positional servo signal | GPIO14 (LEDC timer 2/channel 2, 50 Hz) |
 | MPU6050 SDA | GPIO21 |
 | MPU6050 SCL | GPIO22 |
 | BH1750 + AT24C256 + INA219 SDA (I2C1) | GPIO18 |
@@ -314,7 +314,7 @@ and [TowerPro SG90 specifications](https://towerpro.com.tw/product/sg90-7/).
 
 | SG90 lead (verify markings on your servo) | Connection |
 | --- | --- |
-| Orange/yellow, signal | ESP32 GPIO23 |
+| Orange/yellow, signal | ESP32 GPIO14 |
 | Red, supply | Separate regulated servo supply around 5 V, suitable for its starting/stall current |
 | Brown/black, ground | Servo supply ground and ESP32 GND |
 

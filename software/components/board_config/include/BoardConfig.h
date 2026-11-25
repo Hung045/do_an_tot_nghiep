@@ -13,7 +13,7 @@
 #define DEMO_RELAY_GPIO              GPIO_NUM_27
 
 // Positional SG90 (not continuous rotation), independent LEDC timer at 50 Hz.
-#define DEMO_HEADLIGHT_SERVO_GPIO     GPIO_NUM_23
+#define DEMO_HEADLIGHT_SERVO_GPIO     GPIO_NUM_14
 #define DEMO_SERVO_CENTER_DEG         90.0F
 #define DEMO_SERVO_MIN_DEG            60.0F
 #define DEMO_SERVO_MAX_DEG            120.0F

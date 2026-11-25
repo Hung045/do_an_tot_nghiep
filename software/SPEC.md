@@ -24,7 +24,7 @@ Ga về 0 không tự xóa `FAULT_LOCKED`. Relay/PWM/góc servo trên web là **
 | Hạng mục | Giá trị hiện tại |
 |---|---|
 | Biến trở / motor / relay | GPIO34 / GPIO25 / GPIO27; relay kích mức thấp |
-| Đèn / SG90 | GPIO26 / GPIO23 |
+| Đèn / SG90 | GPIO26 / GPIO14 |
 | MPU6050 | SDA21, SCL22; địa chỉ 0x68 |
 | BH1750 / INA219 / EEPROM | Chung SDA18, SCL19; địa chỉ 0x23 hoặc 0x5C / 0x40 / 0x50 |
 | GPS | TX GPS → GPIO16; RX GPS ← GPIO17; 9600 baud |

@@ -27,7 +27,7 @@ using TickType_t=uint32_t;
     "BoardConfig.h": """#pragma once
 #include "esp_err.h"
 #include "driver/i2c.h"
-#define GPIO_NUM_23 23
+#define GPIO_NUM_14 14
 #define I2C_NUM_0 0
 namespace BoardI2c {
 inline int initialize(int) { return 0; }
@@ -74,7 +74,7 @@ int ledc_timer_config(const ledc_timer_config_t* t) {
  return timerError?ESP_FAIL:ESP_OK;
 }
 int ledc_channel_config(const ledc_channel_config_t* c) {
- assert(c->gpio_num==23 && c->channel==2 && c->timer_sel==2);
+ assert(c->gpio_num==14 && c->channel==2 && c->timer_sel==2);
  duty=c->duty; assert(duty==4915); return ESP_OK;
 }
 int ledc_set_duty(int,int ch,uint32_t d){assert(ch==2); duty=d; return pwmError?ESP_FAIL:ESP_OK;}

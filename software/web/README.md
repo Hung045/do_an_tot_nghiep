@@ -134,7 +134,7 @@ Sau khi flash và cập nhật web, nhấn **Ctrl+F5**.
 
 ### Kiểm tra trên bàn
 
-1. Ngắt nguồn tải động cơ. SG90: tín hiệu GPIO23, nguồn ổn áp riêng khoảng 5 V,
+1. Ngắt nguồn tải động cơ. SG90: tín hiệu GPIO14, nguồn ổn áp riêng khoảng 5 V,
    GND nguồn servo nối chung GND ESP32. Không cấp SG90 bằng 3V3 hoặc pin 3S trực tiếp.
 2. Khởi động khi MPU nằm phẳng, chưa gắn tay servo/đèn. Xác nhận lệnh gần 90°,
    sau đó tắt nguồn và lắp tay servo để đèn hướng thẳng. Trục servo đặt đứng
