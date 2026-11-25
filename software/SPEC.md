@@ -9,7 +9,7 @@
 | MPU lỗi | Dừng ngay; cần 3 mẫu tốt trải trên ≥40 ms trong hạn 200 ms để phục hồi; yêu cầu ga về 0 trước khi chạy lại |
 | Khóa lỗi | Lỗi MPU kéo dài, thiếu MPU bắt buộc, lỗi ADC/đầu ra hoặc ngã → `FAULT_LOCKED`; sửa nguyên nhân rồi reset |
 | Đèn | Dưới 30 lux bật, trên 60 lux tắt, ở giữa giữ trạng thái; mất BH1750 thì bật dự phòng; khóa lỗi thì nhấp nháy |
-| Servo | Theo roll MPU; tâm 90°, giới hạn 60–120°; mất dữ liệu hoặc khóa lỗi thì hướng về giữa |
+| Servo | Theo roll MPU với hệ số 0,5 sau vùng chết ±3°; về tâm khi roll sau lọc ≤3°, rời tâm khi ≥4° (trị tuyệt đối); giữ mục tiêu nếu thay đổi <0,25°; tâm 90°, giới hạn 60–120°; mất dữ liệu hoặc khóa lỗi thì hướng về giữa |
 | GPS | Đọc vị trí, hiển thị bản đồ; phân biệt không có UART, chưa có fix và dữ liệu cũ |
 | INA219 | Đo điện áp/dòng với shunt R100; chưa tính sức khỏe pin hoặc ngắt quá dòng |
 | EEPROM | Lưu vòng 512 bản ghi có CRC, đọc lại sau reset |

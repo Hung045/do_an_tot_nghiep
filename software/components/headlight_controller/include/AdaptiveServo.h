@@ -17,6 +17,7 @@ private:
     esp_err_t writeAngle(float degrees);
     bool ready_ = false;
     bool tracking_ = false;
+    bool centered_ = true;
     float angle_ = 90.0F;
     float target_ = 90.0F;
     float filteredRoll_ = 0.0F;

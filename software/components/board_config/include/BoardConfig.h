@@ -19,10 +19,12 @@
 #define DEMO_SERVO_MAX_DEG            120.0F
 #define DEMO_SERVO_MIN_PULSE_US       1000U
 #define DEMO_SERVO_MAX_PULSE_US       2000U
-#define DEMO_SERVO_GAIN               1.0F
+#define DEMO_SERVO_GAIN               0.5F
 #define DEMO_SERVO_DIRECTION          1
 #define DEMO_SERVO_ROLL_ZERO_DEG      0.0F
 #define DEMO_SERVO_DEADBAND_DEG       3.0F
+#define DEMO_SERVO_CENTER_EXIT_DEG    4.0F
+#define DEMO_SERVO_TARGET_HYST_DEG    0.25F
 #define DEMO_SERVO_RATE_DEG_PER_SEC   60.0F
 #define DEMO_SERVO_FILTER_MS          150.0F
 // MPU mounting: X forward, Y lateral, Z up. Set 0 to use X as lateral axis.

@@ -63,6 +63,7 @@ HARNESS = r'''
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 static bool pwmError=false,timerError=false,stopped=false,imuError=false;
 static uint32_t ticks=0,duty=0;
@@ -103,12 +104,28 @@ int main(){
   assert(s.update(45,true,false,20)==ESP_OK);
   assert(s.angleDegrees()-previous<=1.201F);previous=s.angleDegrees();
  }
- assert(std::fabs(s.angleDegrees()-120)<0.002F && s.targetDegrees()==120);
+ assert(std::fabs(s.angleDegrees()-111)<0.251F && std::fabs(s.targetDegrees()-111)<0.251F);
  for(int i=0;i<150;i++)s.update(-45,true,false,20);
- assert(std::fabs(s.angleDegrees()-60)<0.002F && s.targetDegrees()==60);
+ assert(std::fabs(s.angleDegrees()-69)<0.251F && std::fabs(s.targetDegrees()-69)<0.251F);
  s.update(-45,true,true,20);assert(!s.tracking() && s.targetDegrees()==90);
  for(int i=0;i<100;i++)s.update(-45,true,true,20);
  assert(std::fabs(s.angleDegrees()-90)<0.002F);
+ // Real use sequence: lean, hold without accumulating turns, return upright.
+ for(float lean : {13.0F, -13.0F}) {
+  for(int i=0;i<200;i++)s.update(lean,true,false,20);
+  const float expected=lean>0?95.0F:85.0F;
+  assert(std::fabs(s.angleDegrees()-expected)<0.251F);
+  const float held=s.angleDegrees();
+  for(int i=0;i<1000;i++)s.update(lean,true,false,20);
+  assert(s.angleDegrees()==held);
+  // Tiny sensor changes must not repeatedly move a settled target.
+  for(int i=0;i<100;i++)s.update(lean+(i%2?0.05F:-0.05F),true,false,20);
+  assert(s.angleDegrees()==held);
+  for(int i=0;i<100;i++)s.update(0,true,false,20);
+  assert(s.angleDegrees()==90 && s.targetDegrees()==90 && duty==4915);
+  for(int i=0;i<100;i++)s.update(i%2?3.2F:2.8F,true,false,20);
+  assert(s.angleDegrees()==90); // Do not leave center until filtered roll >=4.
+ }
  for(int i=0;i<100;i++)s.update(30,true,false,20);
  assert(s.angleDegrees()>90);
  s.update(30,false,false,20);assert(!s.tracking() && s.targetDegrees()==90);

@@ -180,6 +180,23 @@ Shared pin defaults and device settings are in
 
 ## Component hand-off
 
+Servo stabilization uses filtered roll with a fixed zero reference from
+`DEMO_SERVO_ROLL_ZERO_DEG` (no automatic startup calibration). It returns to
+the 90-degree command at absolute filtered roll <=3 degrees, and leaves center
+at >=4 degrees. Away from center, target changes smaller than 0.25 degrees are
+held to reduce jitter; gain is 0.5 after the 3-degree deadband. Center return
+bypasses this target hysteresis but still uses the movement rate limit.
+Monitor prints servo status, roll and commanded angle (one decimal place).
+Invalid roll is shown as `nan`; validity, target and nominal pulse width use DEBUG.
+These are software values, not measured shaft angle or pin waveform.
+
+With motor load power disconnected, hold roll near zero for 3 seconds, then
+at +13 degrees for 3 seconds, then zero, -13 degrees, and zero again.
+Expected settled commands are approximately 90, 95, 90, 85, 90 degrees
+(off-center targets have up to 0.25-degree hysteresis). Mark the horn's starting
+position and check physical return. Multiple full shaft rotations are not an
+expected result; diagnose the servo, supply and PWM signal separately if seen.
+
 For the connection test, enter a 2.4 GHz network's SSID and password in
 menuconfig > Vehicle telemetry, save, build, flash, and monitor with motor
 power disconnected. Success logs `Wi-Fi connected, IP=...` and
