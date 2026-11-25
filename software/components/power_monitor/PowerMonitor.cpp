@@ -98,6 +98,7 @@ esp_err_t PowerMonitor::initialize()
     hasFilteredCurrent_ = false;
     sohCycleActive_ = false;
     sohFullReached_ = false;
+    sohTickInitialized_ = false;
     cycleDischargeMah_ = 0.0F;
     lastSohUpdateTick_ = 0;
     learnedCapacityMah_ = -1.0F;
@@ -172,7 +173,7 @@ esp_err_t PowerMonitor::initialize()
                 stateOfHealthPercent_ = 100.0F * learnedCapacityMah_ /
                     static_cast<float>(DEMO_BATTERY_RATED_CAPACITY_MAH);
                 stateOfHealthPercent_ = stateOfHealthPercent_ < 0.0F ? 0.0F :
-                    (stateOfHealthPercent_ > 150.0F ? 150.0F : stateOfHealthPercent_);
+                    (stateOfHealthPercent_ > 100.0F ? 100.0F : stateOfHealthPercent_);
             }
             nvs_close(nvsHandle);
         }
@@ -242,7 +243,7 @@ esp_err_t PowerMonitor::read(PowerReading *reading)
     reading->powerMilliwatts =
         static_cast<float>(powerRaw) * currentLsbAmps_ * 20.0F * 1000.0F;
     reading->stateOfChargePercent = estimateBatterySocPercent(reading->busVoltageVolts);
-    updateSohCycle(reading->busVoltageVolts, reading->currentMilliamps);
+    updateSohCycle(reading->busVoltageVolts, rawCurrentMilliamps);
     reading->stateOfHealthPercent = stateOfHealthPercent_;
     return ESP_OK;
 }
@@ -250,15 +251,22 @@ esp_err_t PowerMonitor::read(PowerReading *reading)
 void PowerMonitor::updateSohCycle(float voltage, float dischargeMilliamps)
 {
     constexpr float fullVoltage = DEMO_BATTERY_FULL_MILLIVOLTS / 1000.0F;
-    constexpr float emptyVoltage = DEMO_BATTERY_EMPTY_MILLIVOLTS / 1000.0F;
+    constexpr float cutoffVoltage = DEMO_BATTERY_CUTOFF_MILLIVOLTS / 1000.0F;
 
     const uint32_t now = static_cast<uint32_t>(xTaskGetTickCount());
-    if (lastSohUpdateTick_ == 0U) {
+    if (!sohTickInitialized_) {
         lastSohUpdateTick_ = now;
+        sohTickInitialized_ = true;
     }
 
     const float measuredDischargeMa =
         DEMO_INA219_DISCHARGE_SIGN * dischargeMilliamps;
+
+    if (measuredDischargeMa < -100.0F) {
+        sohCycleActive_ = false;
+        sohFullReached_ = false;
+        cycleDischargeMah_ = 0.0F;
+    }
 
     if (voltage >= fullVoltage && measuredDischargeMa <= 100.0F) {
         sohFullReached_ = true;
@@ -276,22 +284,28 @@ void PowerMonitor::updateSohCycle(float voltage, float dischargeMilliamps)
         cycleDischargeMah_ += measuredDischargeMa * elapsedHours;
     }
 
-    if (sohCycleActive_ && voltage <= emptyVoltage && measuredDischargeMa > 100.0F) {
+    if (sohCycleActive_ && voltage <= cutoffVoltage && measuredDischargeMa > 100.0F) {
         constexpr uint32_t ratedMah = DEMO_BATTERY_RATED_CAPACITY_MAH;
         if (ratedMah > 0U && cycleDischargeMah_ >= static_cast<float>(ratedMah) * 0.5F) {
             learnedCapacityMah_ = cycleDischargeMah_;
             stateOfHealthPercent_ = 100.0F * learnedCapacityMah_ /
                 static_cast<float>(ratedMah);
             stateOfHealthPercent_ = stateOfHealthPercent_ < 0.0F ? 0.0F :
-                (stateOfHealthPercent_ > 150.0F ? 150.0F : stateOfHealthPercent_);
+                (stateOfHealthPercent_ > 100.0F ? 100.0F : stateOfHealthPercent_);
 
             nvs_handle_t nvsHandle = 0;
             esp_err_t nvsErr = nvs_open("battery_health", NVS_READWRITE, &nvsHandle);
             if (nvsErr == ESP_OK) {
-                nvs_set_u32(nvsHandle, "learned_mah",
+                const esp_err_t setErr = nvs_set_u32(nvsHandle, "learned_mah",
                     static_cast<uint32_t>(learnedCapacityMah_ + 0.5F));
-                nvs_commit(nvsHandle);
+                const esp_err_t commitErr = setErr == ESP_OK
+                    ? nvs_commit(nvsHandle) : setErr;
                 nvs_close(nvsHandle);
+                if (commitErr != ESP_OK) {
+                    ESP_LOGW("PowerMonitor", "SOH NVS save failed: %s", esp_err_to_name(commitErr));
+                }
+            } else {
+                ESP_LOGW("PowerMonitor", "SOH NVS open failed: %s", esp_err_to_name(nvsErr));
             }
             ESP_LOGI("PowerMonitor", "SOH calibration complete: learned=%lu mAh, SOH=%.1f%%",
                      static_cast<unsigned long>(learnedCapacityMah_),

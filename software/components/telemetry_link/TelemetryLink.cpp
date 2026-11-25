@@ -226,7 +226,7 @@ esp_err_t TelemetryLink::publishTelemetry(const TelemetryRecord &record,
         std::snprintf(batterySoc, sizeof(batterySoc), "null");
     }
     if (powerReadingValid && std::isfinite(batterySohPercent) &&
-        batterySohPercent >= 0.0F) {
+        batterySohPercent >= 0.0F && batterySohPercent <= 100.0F) {
         std::snprintf(batterySoh, sizeof(batterySoh), "%.1f", static_cast<double>(batterySohPercent));
     } else {
         std::snprintf(batterySoh, sizeof(batterySoh), "null");

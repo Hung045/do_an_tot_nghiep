@@ -288,12 +288,13 @@ current sample; invalid voltage/current are JSON `null`. The existing EEPROM
 float fields store NaN for unavailable power readings, preserving the 64-byte
 layout and CRC. Historical zero records cannot retrospectively be classified.
 SOH is not inferred from bus voltage. The monitor starts a discharge-capacity
-cycle only after reaching the configured full voltage and integrating positive
-discharge current until the empty threshold. If at least 50% of the rated
-capacity is observed, the learned capacity is divided by
-`DEMO_BATTERY_RATED_CAPACITY_MAH` and saved in NVS. Until that complete cycle,
-`stateOfHealthPercent` and MQTT `battery_soh_pct` remain `null`/unknown. Set the
-nameplate capacity and discharge-current sign in `BoardConfig.h` before use.
+cycle only after reaching the configured full voltage and integrates raw positive
+discharge current until `DEMO_BATTERY_CUTOFF_MILLIVOLTS`. Charging-current reversal
+cancels an incomplete cycle. If at least 50% of the rated capacity is observed,
+the learned capacity is divided by `DEMO_BATTERY_RATED_CAPACITY_MAH`, clamped to
+0–100%, and saved in NVS. Until that complete cycle, `stateOfHealthPercent` and
+MQTT `battery_soh_pct` remain `null`/unknown. Set the nameplate capacity,
+cutoff voltage, and discharge-current sign in `BoardConfig.h` before use.
 
 The native test `python tests/power_host_test.py [path-to-g++]` checks init/read
 failures, valid zero readings, signed current, SOC thresholds, SOH unknown-state

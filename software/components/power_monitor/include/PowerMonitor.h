@@ -24,6 +24,7 @@ private:
     bool hasFilteredCurrent_ = false;
     bool sohCycleActive_ = false;
     bool sohFullReached_ = false;
+    bool sohTickInitialized_ = false;
     float currentLsbAmps_ = 0.0F;
     float filteredCurrentMilliamps_ = 0.0F;
     float learnedCapacityMah_ = -1.0F;

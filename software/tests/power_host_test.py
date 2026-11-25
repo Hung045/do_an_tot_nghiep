@@ -32,8 +32,8 @@ inline esp_err_t nvs_set_u32(nvs_handle_t,const char*,uint32_t) { return ESP_OK;
 inline esp_err_t nvs_commit(nvs_handle_t) { return ESP_OK; }
 inline void nvs_close(nvs_handle_t) {}
 """,
-    "freertos/task.h": "#pragma once\n#include <cstdint>\ninline void vTaskDelay(int) {}\ninline uint32_t xTaskGetTickCount() { return 0; }\n",
-    "esp_log.h": "#pragma once\n#define ESP_LOGI(...) ((void)0)\n",
+    "freertos/task.h": "#pragma once\n#include <cstdint>\ninline uint32_t& sohTestTicks() { static uint32_t ticks=0; return ticks; }\ninline void vTaskDelay(int) {}\ninline uint32_t xTaskGetTickCount() { return sohTestTicks(); }\n",
+    "esp_log.h": "#pragma once\n#include \"esp_err.h\"\n#define ESP_LOGI(...) ((void)0)\n#define ESP_LOGW(...) ((void)0)\ninline const char* esp_err_to_name(esp_err_t err) { return err == 0 ? \"OK\" : \"ERROR\"; }\n",
     "BoardConfig.h": """#pragma once
 #include "esp_err.h"
 #include "driver/i2c.h"
@@ -56,6 +56,7 @@ HARNESS = r'''
 #include "PowerMonitor.h"
 #include "BoardConfig.h"
 #include "driver/i2c.h"
+#include "freertos/task.h"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -141,6 +142,25 @@ int main() {
  regs[2]=(3200<<3)|2; assert(m.read(&p)==ESP_OK && p.stateOfChargePercent==100.0F);
  regs[2]=(3000<<3)|2;
  assert(m.read(&p)==ESP_OK && p.stateOfHealthPercent==-1.0F);
+ // A full-to-empty discharge cycle learns capacity once and remains in 0..100%.
+ sohTestTicks()=0;
+ regs[2]=(3150<<3)|2; regs[4]=0;
+ assert(m.read(&p)==ESP_OK);
+ sohTestTicks()=3600000;
+ regs[2]=(2250<<3)|2; regs[4]=22530;
+ assert(m.read(&p)==ESP_OK);
+ std::printf("SOH calibrated test=%.3f\\n", p.stateOfHealthPercent);
+ assert(std::abs(p.stateOfHealthPercent-100.0F)<0.1F);
+ assert(m.read(&p)==ESP_OK);
+ // Charging reversal aborts an active SOH cycle.
+ sohTestTicks()=7200000;
+ regs[2]=(3150<<3)|2; regs[4]=0;
+ assert(m.read(&p)==ESP_OK);
+ sohTestTicks()=10800000;
+ regs[4]=0xC000; assert(m.read(&p)==ESP_OK);
+ regs[2]=(2250<<3)|2; assert(m.read(&p)==ESP_OK);
+ std::printf("SOH reversal test=%.3f\\n", p.stateOfHealthPercent);
+ assert(std::abs(p.stateOfHealthPercent-100.0F)<0.1F);
  // Reinitialization failure must not reuse a previous calibration as readiness.
  busError=true; assert(m.initialize()==ESP_FAIL);
  assert(m.read(&p)==ESP_ERR_INVALID_STATE); unknown(p);
@@ -154,7 +174,8 @@ board_config = (ROOT / "components/board_config/include/BoardConfig.h").read_tex
 for setting in ("DEMO_INA219_SHUNT_MICRO_OHMS", "DEMO_INA219_MAX_CURRENT_MILLIAMPS",
                 "DEMO_INA219_CURRENT_FILTER_PERCENT", "DEMO_INA219_DISCHARGE_SIGN",
                 "DEMO_BATTERY_EMPTY_MILLIVOLTS", "DEMO_BATTERY_NOMINAL_MILLIVOLTS",
-                "DEMO_BATTERY_FULL_MILLIVOLTS", "DEMO_BATTERY_RATED_CAPACITY_MAH"):
+                "DEMO_BATTERY_FULL_MILLIVOLTS", "DEMO_BATTERY_CUTOFF_MILLIVOLTS",
+                "DEMO_BATTERY_RATED_CAPACITY_MAH"):
     match = re.search(r"^#define\s+" + setting + r"\s+(\d+)\s*$", board_config, re.MULTILINE)
     if not match:
         raise SystemExit("Missing board setting: " + setting)

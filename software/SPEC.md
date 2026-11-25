@@ -63,8 +63,9 @@ web nhận dữ liệu. Đây chưa phải nghiệm thu độ ổn định toàn
 **Chưa giải quyết/kiểm chứng đầy đủ:** timeout MQTT, I2C lỗi khi tích hợp tải,
 INA219 gây lỗi bus và EEPROM báo MISSING trong các lần thử gần đây.
 Ước tính SOC theo điện áp đã có test host nhưng chưa hiệu chuẩn trên pack thật.
-SOH đang dùng dung lượng tích lũy qua chu kỳ xả full→empty và lưu NVS, nhưng
-chưa được xác nhận bằng pack thật; phải đặt dung lượng định mức và dấu dòng xả.
+SOH tích lũy dòng xả thô qua chu kỳ full→cutoff, hủy chu kỳ khi dòng đảo chiều,
+chặn kết quả 0–100% và lưu NVS. Chưa được xác nhận bằng pack thật; phải đặt
+đúng dung lượng định mức, ngưỡng cutoff và dấu dòng xả.
 Chưa có SOH theo từng cell, phản hồi relay/servo, đo RPM, bảo vệ quá dòng hoặc OTA.
 Dashboard đã hỗ trợ endpoint WSS, nhưng chưa triển khai
 domain/broker Internet; cần cấu hình hosting và quyền đọc riêng tư trước khi mở.

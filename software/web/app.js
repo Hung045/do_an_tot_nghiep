@@ -333,7 +333,7 @@ function validateSystemTelemetry(data) {
     (data.battery_soc_pct === undefined || data.battery_soc_pct === null ||
       (Number.isFinite(data.battery_soc_pct) && data.battery_soc_pct >= 0 && data.battery_soc_pct <= 100)) &&
     (data.battery_soh_pct === undefined || data.battery_soh_pct === null ||
-      (Number.isFinite(data.battery_soh_pct) && data.battery_soh_pct >= 0)) &&
+      (Number.isFinite(data.battery_soh_pct) && data.battery_soh_pct >= 0 && data.battery_soh_pct <= 100)) &&
     (!data.gps_valid || data.gps_available) &&
     (data.satellites == null || (Number.isInteger(data.satellites) && data.satellites >= 0)) &&
     (data.speed_mps == null || (Number.isFinite(data.speed_mps) && data.speed_mps >= 0)) &&
@@ -388,7 +388,7 @@ function renderSystemTelemetry(data) {
     ? `${data.bus_voltage_v.toFixed(2)} V · ${data.current_ma.toFixed(0)} mA`
     : "Chưa có số đo điện áp và dòng.");
   const batterySohValid = powerValid && Number.isFinite(data.battery_soh_pct) &&
-    data.battery_soh_pct >= 0;
+    data.battery_soh_pct >= 0 && data.battery_soh_pct <= 100;
   show("battery-soh", batterySohValid
     ? `SOH đã hiệu chuẩn: ${data.battery_soh_pct.toFixed(1)}%`
     : "SOH: chưa hiệu chuẩn — cần chu kỳ xả đầy đủ.");

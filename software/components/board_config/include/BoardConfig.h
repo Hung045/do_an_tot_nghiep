@@ -64,6 +64,7 @@
 #define DEMO_BATTERY_EMPTY_MILLIVOLTS    9600
 #define DEMO_BATTERY_NOMINAL_MILLIVOLTS  11100
 #define DEMO_BATTERY_FULL_MILLIVOLTS     12600
+#define DEMO_BATTERY_CUTOFF_MILLIVOLTS   9000
 // Rated usable capacity for SOH calibration; replace with the battery nameplate capacity.
 #define DEMO_BATTERY_RATED_CAPACITY_MAH  2200
 // 1: positive current means battery discharge; -1 if shunt wiring produces the opposite sign.

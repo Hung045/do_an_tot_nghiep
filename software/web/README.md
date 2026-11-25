@@ -169,7 +169,7 @@ Sau khi flash và cập nhật web, nhấn **Ctrl+F5**.
 ## Trạng thái INA219
 
 `battery_soc_pct` là SOC ước tính theo điện áp pack 3S. `battery_soh_pct` chỉ
-có sau khi firmware hoàn tất một chu kỳ xả từ mức đầy đến mức cạn đủ điều kiện
+có sau khi firmware hoàn tất một chu kỳ xả từ mức đầy đến ngưỡng cutoff cấu hình đủ điều kiện
 và lưu dung lượng học được trong NVS; trước đó web hiển thị “chưa hiệu chuẩn”.
 SOH không suy ra trực tiếp từ điện áp và không đại diện cho trạng thái từng cell.
 
