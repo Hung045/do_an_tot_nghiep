@@ -14,8 +14,25 @@ using esp_err_t=int;
 constexpr int ESP_OK=0, ESP_FAIL=-1, ESP_ERR_INVALID_ARG=1,
  ESP_ERR_INVALID_STATE=2, ESP_ERR_NOT_FOUND=3, ESP_ERR_TIMEOUT=4;
 """,
-    "freertos/FreeRTOS.h": "#pragma once\n#define pdMS_TO_TICKS(ms) (ms)\n",
-    "freertos/task.h": "#pragma once\ninline void vTaskDelay(int) {}\n",
+    "freertos/FreeRTOS.h": "#pragma once\n#include <cstdint>\n#define pdMS_TO_TICKS(ms) (ms)\n#define portTICK_PERIOD_MS 1\n",
+"nvs_flash.h": """#pragma once
+#include \"esp_err.h\"
+constexpr int ESP_ERR_NVS_NO_FREE_PAGES=5;
+constexpr int ESP_ERR_NVS_NEW_VERSION_FOUND=6;
+inline esp_err_t nvs_flash_init() { return ESP_OK; }
+""",
+"nvs.h": """#pragma once
+#include \"esp_err.h\"
+#include <cstdint>
+using nvs_handle_t=uint32_t;
+constexpr int NVS_READONLY=0, NVS_READWRITE=1;
+inline esp_err_t nvs_open(const char*,int,nvs_handle_t*) { return ESP_OK; }
+inline esp_err_t nvs_get_u32(nvs_handle_t,const char*,uint32_t*) { return ESP_ERR_NOT_FOUND; }
+inline esp_err_t nvs_set_u32(nvs_handle_t,const char*,uint32_t) { return ESP_OK; }
+inline esp_err_t nvs_commit(nvs_handle_t) { return ESP_OK; }
+inline void nvs_close(nvs_handle_t) {}
+""",
+    "freertos/task.h": "#pragma once\n#include <cstdint>\ninline void vTaskDelay(int) {}\ninline uint32_t xTaskGetTickCount() { return 0; }\n",
     "esp_log.h": "#pragma once\n#define ESP_LOGI(...) ((void)0)\n",
     "BoardConfig.h": """#pragma once
 #include "esp_err.h"
@@ -68,9 +85,10 @@ int BoardI2c::writeRead(int port,uint8_t addr,const uint8_t* d,size_t n,uint8_t*
 void unknown(const PowerReading& p) {
  assert(std::isnan(p.busVoltageVolts) && std::isnan(p.currentMilliamps) && std::isnan(p.powerMilliwatts));
  assert(p.stateOfChargePercent==-1.0F);
+ assert(p.stateOfHealthPercent==-1.0F);
 }
 int main() {
- PowerMonitor m; PowerReading p={12,100,1200,50};
+ PowerMonitor m; PowerReading p={12,100,1200,50,-1};
  assert(m.read(nullptr)==ESP_ERR_INVALID_ARG);
  assert(m.read(&p)==ESP_ERR_INVALID_STATE); unknown(p);
  // Each failed initialization must leave reads disabled.
@@ -122,6 +140,7 @@ int main() {
  regs[2]=(2300<<3)|2; assert(m.read(&p)==ESP_OK && p.stateOfChargePercent==0.0F);
  regs[2]=(3200<<3)|2; assert(m.read(&p)==ESP_OK && p.stateOfChargePercent==100.0F);
  regs[2]=(3000<<3)|2;
+ assert(m.read(&p)==ESP_OK && p.stateOfHealthPercent==-1.0F);
  // Reinitialization failure must not reuse a previous calibration as readiness.
  busError=true; assert(m.initialize()==ESP_FAIL);
  assert(m.read(&p)==ESP_ERR_INVALID_STATE); unknown(p);
@@ -133,8 +152,9 @@ compiler = sys.argv[1] if len(sys.argv) > 1 else shutil.which("g++")
 # Use the actual board calibration instead of a separate mock calibration.
 board_config = (ROOT / "components/board_config/include/BoardConfig.h").read_text(encoding="utf-8")
 for setting in ("DEMO_INA219_SHUNT_MICRO_OHMS", "DEMO_INA219_MAX_CURRENT_MILLIAMPS",
-                "DEMO_INA219_CURRENT_FILTER_PERCENT", "DEMO_BATTERY_EMPTY_MILLIVOLTS",
-                "DEMO_BATTERY_NOMINAL_MILLIVOLTS", "DEMO_BATTERY_FULL_MILLIVOLTS"):
+                "DEMO_INA219_CURRENT_FILTER_PERCENT", "DEMO_INA219_DISCHARGE_SIGN",
+                "DEMO_BATTERY_EMPTY_MILLIVOLTS", "DEMO_BATTERY_NOMINAL_MILLIVOLTS",
+                "DEMO_BATTERY_FULL_MILLIVOLTS", "DEMO_BATTERY_RATED_CAPACITY_MAH"):
     match = re.search(r"^#define\s+" + setting + r"\s+(\d+)\s*$", board_config, re.MULTILINE)
     if not match:
         raise SystemExit("Missing board setting: " + setting)

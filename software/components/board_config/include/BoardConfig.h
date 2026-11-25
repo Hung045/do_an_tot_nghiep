@@ -64,6 +64,10 @@
 #define DEMO_BATTERY_EMPTY_MILLIVOLTS    9600
 #define DEMO_BATTERY_NOMINAL_MILLIVOLTS  11100
 #define DEMO_BATTERY_FULL_MILLIVOLTS     12600
+// Rated usable capacity for SOH calibration; replace with the battery nameplate capacity.
+#define DEMO_BATTERY_RATED_CAPACITY_MAH  2200
+// 1: positive current means battery discharge; -1 if shunt wiring produces the opposite sign.
+#define DEMO_INA219_DISCHARGE_SIGN       1
 
 // Relay module is active-low; verify against the actual module before use.
 #define DEMO_RELAY_ACTIVE_LEVEL          0

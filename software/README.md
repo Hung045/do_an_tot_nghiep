@@ -287,8 +287,17 @@ MQTT keeps `power_available` for initialization and adds `power_valid` for the
 current sample; invalid voltage/current are JSON `null`. The existing EEPROM
 float fields store NaN for unavailable power readings, preserving the 64-byte
 layout and CRC. Historical zero records cannot retrospectively be classified.
+SOH is not inferred from bus voltage. The monitor starts a discharge-capacity
+cycle only after reaching the configured full voltage and integrating positive
+discharge current until the empty threshold. If at least 50% of the rated
+capacity is observed, the learned capacity is divided by
+`DEMO_BATTERY_RATED_CAPACITY_MAH` and saved in NVS. Until that complete cycle,
+`stateOfHealthPercent` and MQTT `battery_soh_pct` remain `null`/unknown. Set the
+nameplate capacity and discharge-current sign in `BoardConfig.h` before use.
+
 The native test `python tests/power_host_test.py [path-to-g++]` checks init/read
-failures, valid zero readings, signed current and recovery with fake I2C.
+failures, valid zero readings, signed current, SOC thresholds, SOH unknown-state
+and recovery with fake I2C.
 
 The logger stores 64-byte CRC-protected records in a circular region and scans
 the EEPROM at startup to recover the newest complete record after power loss.

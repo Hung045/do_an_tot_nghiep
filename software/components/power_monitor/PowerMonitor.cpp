@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <limits>
 
+#include "nvs.h"
+#include "nvs_flash.h"
+
 #include "BoardConfig.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -93,6 +96,12 @@ esp_err_t PowerMonitor::initialize()
 {
     initialized_ = false;
     hasFilteredCurrent_ = false;
+    sohCycleActive_ = false;
+    sohFullReached_ = false;
+    cycleDischargeMah_ = 0.0F;
+    lastSohUpdateTick_ = 0;
+    learnedCapacityMah_ = -1.0F;
+    stateOfHealthPercent_ = -1.0F;
     currentLsbAmps_ = 0.0F;
     filteredCurrentMilliamps_ = 0.0F;
     calibration_ = 0;
@@ -151,6 +160,24 @@ esp_err_t PowerMonitor::initialize()
     if (configuration != kContinuousShuntAndBusConfig || calibration != calibration_)
         return ESP_ERR_INVALID_STATE;
 
+    nvs_handle_t nvsHandle = 0;
+    esp_err_t nvsErr = nvs_flash_init();
+    if (nvsErr == ESP_OK || nvsErr == ESP_ERR_NVS_NO_FREE_PAGES || nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvsErr = nvs_open("battery_health", NVS_READONLY, &nvsHandle);
+        if (nvsErr == ESP_OK) {
+            uint32_t learnedMah = 0;
+            if (nvs_get_u32(nvsHandle, "learned_mah", &learnedMah) == ESP_OK &&
+                learnedMah >= 100U) {
+                learnedCapacityMah_ = static_cast<float>(learnedMah);
+                stateOfHealthPercent_ = 100.0F * learnedCapacityMah_ /
+                    static_cast<float>(DEMO_BATTERY_RATED_CAPACITY_MAH);
+                stateOfHealthPercent_ = stateOfHealthPercent_ < 0.0F ? 0.0F :
+                    (stateOfHealthPercent_ > 150.0F ? 150.0F : stateOfHealthPercent_);
+            }
+            nvs_close(nvsHandle);
+        }
+    }
+
     initialized_ = true;
     ESP_LOGI("PowerMonitor", "INA219 configured; shunt=%lu uOhm, range=%lu mA; average=64 samples/channel (~68 ms/cycle)",
              static_cast<unsigned long>(DEMO_INA219_SHUNT_MICRO_OHMS),
@@ -165,7 +192,7 @@ esp_err_t PowerMonitor::read(PowerReading *reading)
     }
     // Failed reads must not leave old or plausible zero measurements behind.
     const float unknown = std::numeric_limits<float>::quiet_NaN();
-    *reading = {unknown, unknown, unknown, -1.0F};
+    *reading = {unknown, unknown, unknown, -1.0F, -1.0F};
     if (!initialized_ || currentLsbAmps_ <= 0.0F) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -215,5 +242,65 @@ esp_err_t PowerMonitor::read(PowerReading *reading)
     reading->powerMilliwatts =
         static_cast<float>(powerRaw) * currentLsbAmps_ * 20.0F * 1000.0F;
     reading->stateOfChargePercent = estimateBatterySocPercent(reading->busVoltageVolts);
+    updateSohCycle(reading->busVoltageVolts, reading->currentMilliamps);
+    reading->stateOfHealthPercent = stateOfHealthPercent_;
     return ESP_OK;
+}
+
+void PowerMonitor::updateSohCycle(float voltage, float dischargeMilliamps)
+{
+    constexpr float fullVoltage = DEMO_BATTERY_FULL_MILLIVOLTS / 1000.0F;
+    constexpr float emptyVoltage = DEMO_BATTERY_EMPTY_MILLIVOLTS / 1000.0F;
+
+    const uint32_t now = static_cast<uint32_t>(xTaskGetTickCount());
+    if (lastSohUpdateTick_ == 0U) {
+        lastSohUpdateTick_ = now;
+    }
+
+    const float measuredDischargeMa =
+        DEMO_INA219_DISCHARGE_SIGN * dischargeMilliamps;
+
+    if (voltage >= fullVoltage && measuredDischargeMa <= 100.0F) {
+        sohFullReached_ = true;
+    }
+
+    if (sohFullReached_ && measuredDischargeMa > 100.0F && !sohCycleActive_) {
+        sohCycleActive_ = true;
+        cycleDischargeMah_ = 0.0F;
+    }
+
+    if (sohCycleActive_ && measuredDischargeMa > 100.0F) {
+        const uint32_t elapsedTicks = now - lastSohUpdateTick_;
+        const float elapsedHours = static_cast<float>(elapsedTicks) *
+            static_cast<float>(portTICK_PERIOD_MS) / 3600000.0F;
+        cycleDischargeMah_ += measuredDischargeMa * elapsedHours;
+    }
+
+    if (sohCycleActive_ && voltage <= emptyVoltage && measuredDischargeMa > 100.0F) {
+        constexpr uint32_t ratedMah = DEMO_BATTERY_RATED_CAPACITY_MAH;
+        if (ratedMah > 0U && cycleDischargeMah_ >= static_cast<float>(ratedMah) * 0.5F) {
+            learnedCapacityMah_ = cycleDischargeMah_;
+            stateOfHealthPercent_ = 100.0F * learnedCapacityMah_ /
+                static_cast<float>(ratedMah);
+            stateOfHealthPercent_ = stateOfHealthPercent_ < 0.0F ? 0.0F :
+                (stateOfHealthPercent_ > 150.0F ? 150.0F : stateOfHealthPercent_);
+
+            nvs_handle_t nvsHandle = 0;
+            esp_err_t nvsErr = nvs_open("battery_health", NVS_READWRITE, &nvsHandle);
+            if (nvsErr == ESP_OK) {
+                nvs_set_u32(nvsHandle, "learned_mah",
+                    static_cast<uint32_t>(learnedCapacityMah_ + 0.5F));
+                nvs_commit(nvsHandle);
+                nvs_close(nvsHandle);
+            }
+            ESP_LOGI("PowerMonitor", "SOH calibration complete: learned=%lu mAh, SOH=%.1f%%",
+                     static_cast<unsigned long>(learnedCapacityMah_),
+                     static_cast<double>(stateOfHealthPercent_));
+        }
+        sohCycleActive_ = false;
+        sohFullReached_ = false;
+        cycleDischargeMah_ = 0.0F;
+    }
+
+    lastSohUpdateTick_ = now;
 }
