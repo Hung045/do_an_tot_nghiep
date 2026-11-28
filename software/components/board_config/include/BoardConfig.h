@@ -2,20 +2,21 @@
 
 #include "driver/gpio.h"
 
-#define DEMO_THROTTLE_ADC_CHANNEL    ADC_CHANNEL_6
-#define DEMO_THROTTLE_GPIO           GPIO_NUM_34
+// Classic ESP32: GPIO32 = ADC1 channel 4. Keep channel and GPIO in sync.
+#define DEMO_THROTTLE_ADC_CHANNEL    ADC_CHANNEL_4
+#define DEMO_THROTTLE_GPIO           GPIO_NUM_32
 
 #define DEMO_THROTTLE_ADC_MIN        0
 #define DEMO_THROTTLE_ADC_MAX        4095
 
-#define DEMO_MOTOR_PWM_GPIO          GPIO_NUM_25
-#define DEMO_HEADLIGHT_PWM_GPIO      GPIO_NUM_26
+#define DEMO_MOTOR_PWM_GPIO          GPIO_NUM_33
+#define DEMO_HEADLIGHT_PWM_GPIO      GPIO_NUM_25
 #define DEMO_RELAY_GPIO              GPIO_NUM_27
 
 // Positional MG90S, using the pulse mapping verified in mg90s_bench.
 // Command range 50..130 degrees; calibrate actual angles and mechanical clearance.
 // Independent LEDC timer at 50 Hz; center 1500 us, nominal limits 1278..1722 us.
-#define DEMO_HEADLIGHT_SERVO_GPIO     GPIO_NUM_14
+#define DEMO_HEADLIGHT_SERVO_GPIO     GPIO_NUM_26
 #define DEMO_SERVO_CENTER_DEG         90.0F
 #define DEMO_SERVO_MIN_DEG            50.0F
 #define DEMO_SERVO_MAX_DEG            130.0F
