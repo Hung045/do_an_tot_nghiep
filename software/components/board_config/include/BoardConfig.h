@@ -12,23 +12,29 @@
 #define DEMO_HEADLIGHT_PWM_GPIO      GPIO_NUM_26
 #define DEMO_RELAY_GPIO              GPIO_NUM_27
 
-// Positional SG90 (not continuous rotation), independent LEDC timer at 50 Hz.
+// Positional MG90S, using the pulse mapping verified in mg90s_bench.
+// Command range 50..130 degrees; calibrate actual angles and mechanical clearance.
+// Independent LEDC timer at 50 Hz; center 1500 us, nominal limits 1278..1722 us.
 #define DEMO_HEADLIGHT_SERVO_GPIO     GPIO_NUM_14
 #define DEMO_SERVO_CENTER_DEG         90.0F
-#define DEMO_SERVO_MIN_DEG            60.0F
-#define DEMO_SERVO_MAX_DEG            120.0F
+#define DEMO_SERVO_MIN_DEG            50.0F
+#define DEMO_SERVO_MAX_DEG            130.0F
 #define DEMO_SERVO_MIN_PULSE_US       1000U
 #define DEMO_SERVO_MAX_PULSE_US       2000U
-#define DEMO_SERVO_GAIN               0.5F
-#define DEMO_SERVO_DIRECTION          1
+#define DEMO_SERVO_GAIN               1.0F
+#define DEMO_SERVO_DIRECTION          -1
 #define DEMO_SERVO_ROLL_ZERO_DEG      0.0F
-#define DEMO_SERVO_DEADBAND_DEG       3.0F
-#define DEMO_SERVO_CENTER_EXIT_DEG    4.0F
+#define DEMO_SERVO_DEADBAND_DEG       0.5F
+#define DEMO_SERVO_CENTER_EXIT_DEG    1.0F
 #define DEMO_SERVO_TARGET_HYST_DEG    0.25F
-#define DEMO_SERVO_RATE_DEG_PER_SEC   60.0F
-#define DEMO_SERVO_FILTER_MS          150.0F
+#define DEMO_SERVO_RATE_DEG_PER_SEC   50.0F
+#define DEMO_SERVO_FILTER_MS          40.0F
 // MPU mounting: X forward, Y lateral, Z up. Set 0 to use X as lateral axis.
 #define DEMO_MPU_ROLL_USE_Y           1
+// Single-axis roll estimate: gyro fast response, accelerometer drift correction.
+#define DEMO_MPU_ROLL_FILTER_MS       500.0F
+// Bias in signed roll-rate coordinates (gyro X, or -gyro Y for alternate axis).
+#define DEMO_MPU_ROLL_GYRO_BIAS_DPS   0.0F
 
 // MPU6050 has a dedicated hardware bus; slow peripherals share I2C1.
 #define DEMO_MPU_I2C_PORT            I2C_NUM_0

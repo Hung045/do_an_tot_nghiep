@@ -9,7 +9,7 @@
 | MPU lỗi | Dừng ngay; cần 3 mẫu tốt trải trên ≥40 ms trong hạn 200 ms để phục hồi; yêu cầu ga về 0 trước khi chạy lại |
 | Khóa lỗi | Lỗi MPU kéo dài, thiếu MPU bắt buộc, lỗi ADC/đầu ra hoặc ngã → `FAULT_LOCKED`; sửa nguyên nhân rồi reset |
 | Đèn | Dưới 30 lux bật, trên 60 lux tắt, ở giữa giữ trạng thái; mất BH1750 thì bật dự phòng; khóa lỗi thì nhấp nháy |
-| Servo | Theo roll MPU với hệ số 0,5 sau vùng chết ±3°; về tâm khi roll sau lọc ≤3°, rời tâm khi ≥4° (trị tuyệt đối); giữ mục tiêu nếu thay đổi <0,25°; tâm 90°, giới hạn 60–120°; mất dữ liệu hoặc khóa lỗi thì hướng về giữa |
+| Servo | Bù ngang tuyệt đối 1:1 theo roll kết hợp gyro + gia tốc kế: mục tiêu 90° − roll; tâm 90°, giới hạn 50–130° (bù danh định tối đa ±40°); về tâm khi roll sau lọc ≤0,5°, rời tâm khi ≥1° (trị tuyệt đối); giữ mục tiêu nếu thay đổi <0,25°; mất dữ liệu/khóa lỗi thì về tâm |
 | GPS | Đọc vị trí, hiển thị bản đồ; phân biệt không có UART, chưa có fix và dữ liệu cũ |
 | INA219 | Đo điện áp/dòng với shunt R100; chưa tính sức khỏe pin hoặc ngắt quá dòng |
 | EEPROM | Lưu vòng 512 bản ghi có CRC, đọc lại sau reset |
@@ -19,12 +19,19 @@ Trạng thái xe: `LOCKED → READY → RELAY_WAIT → RUNNING`.
 Trả ga về 0 → `READY`; MPU đang phục hồi → `SENSOR_WAIT`; lỗi chốt → `FAULT_LOCKED`.
 Ga về 0 không tự xóa `FAULT_LOCKED`. Relay/PWM/góc servo trên web là **lệnh**, không phải phản hồi phần cứng.
 
+Roll dùng complementary filter 500 ms, gyro ±250°/s và gia tốc ±2g; bỏ hiệu chỉnh gia tốc
+khi độ lớn nằm ngoài 0,8–1,2g. Mất mẫu hoặc khoảng đọc >100 ms thì khởi tạo lại roll từ gia tốc.
+Tilt phát hiện ngã vẫn tính từ gia tốc theo logic cũ. Đây là ước lượng một trục, không bảo đảm
+giữ ngang khi cua kéo dài, tăng tốc mạnh hoặc đồng thời chúi/ngửa; chưa có phản hồi góc đèn.
+Trục servo phải dọc thân xe, MPU X hướng trước/Y ngang/Z lên. Cần servo vị trí hoạt động đúng;
+chiếc đã quay nhiều vòng ở bài thử riêng chưa được xác nhận phù hợp. Không thay GPIO.
+
 ## 2. Thông số cần giữ thống nhất
 
 | Hạng mục | Giá trị hiện tại |
 |---|---|
 | Biến trở / motor / relay | GPIO34 / GPIO25 / GPIO27; relay kích mức thấp |
-| Đèn / SG90 | GPIO26 / GPIO14 |
+| Đèn / MG90S | GPIO26 / GPIO14 |
 | MPU6050 | SDA21, SCL22; địa chỉ 0x68 |
 | BH1750 / INA219 / EEPROM | Chung SDA18, SCL19; địa chỉ 0x23 hoặc 0x5C / 0x40 / 0x50 |
 | GPS | TX GPS → GPIO16; RX GPS ← GPIO17; 9600 baud |

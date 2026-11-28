@@ -105,7 +105,7 @@ MQTT đang cập nhật không có nghĩa GPS đã định vị. Firmware cũ kh
 trường chẩn đoán vẫn hiển thị được, nhưng không phân biệt được mất UART và
 chưa có fix. Sau khi cập nhật web, nhấn Ctrl+F5.
 
-## Đèn pha và SG90
+## Đèn pha và MG90S
 
 ### Phục hồi MPU và khóa an toàn
 
@@ -134,13 +134,17 @@ Sau khi flash và cập nhật web, nhấn **Ctrl+F5**.
 
 ### Kiểm tra trên bàn
 
-1. Ngắt nguồn tải động cơ. SG90: tín hiệu GPIO14, nguồn ổn áp riêng khoảng 5 V,
-   GND nguồn servo nối chung GND ESP32. Không cấp SG90 bằng 3V3 hoặc pin 3S trực tiếp.
+1. Ngắt nguồn tải động cơ. MG90S: tín hiệu GPIO14, nguồn ổn áp riêng khoảng 5 V,
+   GND nguồn servo nối chung GND ESP32. Không cấp MG90S bằng 3V3 hoặc pin 3S trực tiếp.
 2. Khởi động khi MPU nằm phẳng, chưa gắn tay servo/đèn. Xác nhận lệnh gần 90°,
-   sau đó tắt nguồn và lắp tay servo để đèn hướng thẳng. Trục servo đặt đứng
-   để đèn quay trái/phải; dùng đèn nhẹ và để dây đủ chùng.
+   sau đó tắt nguồn và lắp tay servo để đèn hướng thẳng. Trục servo đặt dọc thân xe
+   để đèn nghiêng bù trái/phải; dùng đèn nhẹ và để dây đủ chùng.
 3. Nghiêng MPU lần lượt trái/phải khoảng 15–30°. Góc mục tiêu và góc lệnh phải
-   đổi mượt, trong giới hạn mặc định 60–120°. Về phẳng thì trở về giữa.
+   đổi mượt và ngược chiều roll theo tỷ lệ 1:1, trong giới hạn mặc định 50–130°.
+   Roll +20° → lệnh khoảng 70°, roll −20° → khoảng 110°. Về phẳng thì trở về giữa.
+   Đây là lệnh, cần kiểm tra góc thật; servo quay nhiều vòng ở bài thử độc lập
+   chưa đáp ứng yêu cầu giữ vị trí. Bộ lọc gyro/gia tốc không bảo đảm giữ ngang
+   khi cua kéo dài hoặc chuyển động mạnh, và không bù chúi/ngửa bằng một trục.
 4. Nếu quay ngược hướng mong muốn, đổi `DEMO_SERVO_DIRECTION` từ `1` thành `-1`
    trong `BoardConfig.h`, build/flash lại. Nếu mặt phẳng lắp bị lệch, chỉnh
    `DEMO_SERVO_ROLL_ZERO_DEG` theo góc roll đo khi xe đứng thẳng.

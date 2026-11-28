@@ -55,7 +55,7 @@ esp_err_t AdaptiveServo::initialize()
     err = ledc_channel_config(&channel);
     if (err != ESP_OK) return err;
     ready_ = true;
-    ESP_LOGI("AdaptiveServo", "SG90 GPIO%d, 50 Hz, center=%.1f deg, limits=%.1f..%.1f deg (command only)",
+    ESP_LOGI("AdaptiveServo", "MG90S GPIO%d, 50 Hz, center=%.1f deg, limits=%.1f..%.1f deg (command only)",
              DEMO_HEADLIGHT_SERVO_GPIO, static_cast<double>(angle_),
              static_cast<double>(DEMO_SERVO_MIN_DEG), static_cast<double>(DEMO_SERVO_MAX_DEG));
     return ESP_OK;
@@ -89,12 +89,11 @@ esp_err_t AdaptiveServo::update(float rollDegrees, bool imuValid, bool fault, ui
             // Always return exactly to center, even for a sub-hysteresis remainder.
             target_ = DEMO_SERVO_CENTER_DEG;
         } else {
-            const float offset = std::copysign(
-                std::max(0.0F, magnitude - DEMO_SERVO_DEADBAND_DEG), filteredRoll_);
+            // Absolute roll compensation avoids history-dependent offsets after
+            // reaching a mechanical command limit and then leaning back.
             const float candidate = std::clamp(
-                DEMO_SERVO_CENTER_DEG + DEMO_SERVO_DIRECTION * DEMO_SERVO_GAIN * offset,
+                DEMO_SERVO_CENTER_DEG + DEMO_SERVO_DIRECTION * DEMO_SERVO_GAIN * filteredRoll_,
                 DEMO_SERVO_MIN_DEG, DEMO_SERVO_MAX_DEG);
-            // Hold small target changes; never accumulate an angle per iteration.
             if (std::fabs(candidate - target_) >= DEMO_SERVO_TARGET_HYST_DEG)
                 target_ = candidate;
         }

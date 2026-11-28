@@ -67,7 +67,7 @@ HARNESS = r'''
 #include <limits>
 static bool pwmError=false,timerError=false,stopped=false,imuError=false;
 static uint32_t ticks=0,duty=0;
-static int16_t ax=0,ay=0,az=16384;
+static int16_t ax=0,ay=0,az=16384,gx=0,gy=0,gz=0;
 uint32_t xTaskGetTickCount(){return ticks;}
 const char* esp_err_to_name(int){return "mock";}
 int ledc_timer_config(const ledc_timer_config_t* t) {
@@ -87,9 +87,9 @@ int BoardI2c::writeRead(int port,uint8_t,const uint8_t* reg,size_t,uint8_t* out,
  if(*reg==0x3B) assert(timeout<=20);
  if(imuError)return ESP_FAIL;
  if(*reg==0x75){out[0]=0x68;return 0;}
- assert(*reg==0x3B && n==6);
- int16_t data[]={ax,ay,az};
- for(int i=0;i<3;i++){out[2*i]=static_cast<uint16_t>(data[i])>>8;out[2*i+1]=data[i]&255;}
+ assert(*reg==0x3B && n==14);
+ int16_t data[]={ax,ay,az,0,gx,gy,gz};
+ for(int i=0;i<7;i++){out[2*i]=static_cast<uint16_t>(data[i])>>8;out[2*i+1]=data[i]&255;}
  return 0;
 }
 int main(){
@@ -97,38 +97,59 @@ int main(){
  assert(s.update(0,true,false,20)==ESP_ERR_INVALID_STATE);
  timerError=true;assert(s.initialize()==ESP_FAIL && !s.isReady());timerError=false;
  assert(s.initialize()==ESP_OK && s.angleDegrees()==90);
- for(int i=0;i<200;i++)assert(s.update(2,true,false,20)==ESP_OK);
+ for(int i=0;i<200;i++)assert(s.update(0.2F,true,false,20)==ESP_OK);
  assert(s.angleDegrees()==90); // deadband
  float previous=90;
  for(int i=0;i<100;i++){
   assert(s.update(45,true,false,20)==ESP_OK);
-  assert(s.angleDegrees()-previous<=1.201F);previous=s.angleDegrees();
+  assert(std::fabs(s.angleDegrees()-previous)<=1.001F);previous=s.angleDegrees();
  }
- assert(std::fabs(s.angleDegrees()-111)<0.251F && std::fabs(s.targetDegrees()-111)<0.251F);
+ assert(std::fabs(s.angleDegrees()-50.0F)<0.251F && std::fabs(s.targetDegrees()-50.0F)<0.251F);
  for(int i=0;i<150;i++)s.update(-45,true,false,20);
- assert(std::fabs(s.angleDegrees()-69)<0.251F && std::fabs(s.targetDegrees()-69)<0.251F);
+ assert(std::fabs(s.angleDegrees()-130.0F)<0.251F && std::fabs(s.targetDegrees()-130.0F)<0.251F);
+ // Return from saturation must use absolute roll, not a clipped accumulator.
+ for(int i=0;i<200;i++)s.update(-10,true,false,20);
+ assert(std::fabs(s.angleDegrees()-100)<0.251F);
  s.update(-45,true,true,20);assert(!s.tracking() && s.targetDegrees()==90);
  for(int i=0;i<100;i++)s.update(-45,true,true,20);
  assert(std::fabs(s.angleDegrees()-90)<0.002F);
  // Real use sequence: lean, hold without accumulating turns, return upright.
- for(float lean : {13.0F, -13.0F}) {
+ for(float lean : {20.0F, -20.0F}) {
   for(int i=0;i<200;i++)s.update(lean,true,false,20);
-  const float expected=lean>0?95.0F:85.0F;
+  const float expected=lean>0?70.0F:110.0F;
   assert(std::fabs(s.angleDegrees()-expected)<0.251F);
   const float held=s.angleDegrees();
   for(int i=0;i<1000;i++)s.update(lean,true,false,20);
   assert(s.angleDegrees()==held);
-  // Tiny sensor changes must not repeatedly move a settled target.
+  // A sample near a hysteresis boundary may cause one small target update;
+  // noise must stay bounded, not accumulate into drift.
   for(int i=0;i<100;i++)s.update(lean+(i%2?0.05F:-0.05F),true,false,20);
-  assert(s.angleDegrees()==held);
+  assert(std::fabs(s.angleDegrees()-held)<0.31F);
   for(int i=0;i<100;i++)s.update(0,true,false,20);
   assert(s.angleDegrees()==90 && s.targetDegrees()==90 && duty==4915);
-  for(int i=0;i<100;i++)s.update(i%2?3.2F:2.8F,true,false,20);
-  assert(s.angleDegrees()==90); // Do not leave center until filtered roll >=4.
+  for(int i=0;i<100;i++)s.update(i%2?0.6F:0.4F,true,false,20);
+  assert(s.angleDegrees()==90); // Do not leave center until filtered roll >=1.
+ }
+ // Slow increments must survive target hysteresis; repeated return to center
+ // must clear accumulated history, including after invalid sensor samples.
+ for(int cycle=0;cycle<20;cycle++) {
+  for(int i=0;i<100;i++)s.update(0,true,false,20);
+  assert(s.angleDegrees()==90);
+  for(int i=0;i<=200;i++)s.update(i*0.1F,true,false,20);
+  for(int i=0;i<100;i++)s.update(20,true,false,20);
+  assert(std::fabs(s.angleDegrees()-70)<0.251F);
+  const float held=s.angleDegrees();
+  for(int i=0;i<100;i++)s.update(20,true,false,20);
+  assert(s.angleDegrees()==held);
+  for(int i=200;i>=0;i--)s.update(i*0.1F,true,false,20);
+  for(int i=0;i<100;i++)s.update(0,true,false,20);
+  assert(s.angleDegrees()==90 && duty==4915);
  }
  for(int i=0;i<100;i++)s.update(30,true,false,20);
- assert(s.angleDegrees()>90);
+ assert(s.angleDegrees()<90);
  s.update(30,false,false,20);assert(!s.tracking() && s.targetDegrees()==90);
+ for(int i=0;i<200;i++)s.update(-10,true,false,20);
+ assert(std::fabs(s.angleDegrees()-100)<0.251F);
  s.update(std::numeric_limits<float>::quiet_NaN(),true,false,20);assert(!s.tracking());
  s.update(65,true,false,20);assert(!s.tracking());
  previous=s.angleDegrees();s.update(-45,true,false,10000);
@@ -141,7 +162,7 @@ int main(){
  ay=8192;assert(m.update(&tilt,&crash)==ESP_OK);
  assert(m.rollDegrees()>26 && m.rollDegrees()<27 && !crash);
  const float rightTilt=tilt;
- ay=-8192;assert(m.update(&tilt,&crash)==ESP_OK);
+ ticks+=200;ay=-8192;assert(m.update(&tilt,&crash)==ESP_OK);
  assert(m.rollDegrees()<-26 && std::fabs(tilt-rightTilt)<0.01F);
  ay=16384;az=4096;ticks=100;m.update(&tilt,&crash);assert(!crash);
  ticks=300;m.update(&tilt,&crash);assert(crash);
@@ -155,6 +176,31 @@ int main(){
  imuError=true;ticks=1210;m.update(&tilt,&crash);assert(!crash);imuError=false;
  ticks=1400;m.update(&tilt,&crash);assert(!crash);
  ticks=1600;m.update(&tilt,&crash);assert(crash);
+ // Gyro contributes immediately even before the acceleration angle changes.
+ CrashDetector fused;ax=ay=0;az=16384;gx=gy=gz=0;ticks=2000;
+ assert(fused.initialize()==ESP_OK);
+ assert(fused.update(&tilt,&crash)==ESP_OK && fused.rollDegrees()==0);
+ gx=13100;ticks+=20;fused.update(&tilt,&crash);
+ assert(fused.rollDegrees()>1.9F && fused.rollDegrees()<2.0F);
+ assert(tilt==0); // Crash tilt remains accelerometer-based.
+ // Large acceleration cannot pull the lamp estimate toward a false tilt.
+ const float before=fused.rollDegrees();
+ ax=30000;ticks+=20;fused.update(&tilt,&crash);
+ assert(std::fabs(fused.rollDegrees()-before-2.0F)<0.001F);
+ // Stationary accelerometer correction removes gyro-estimate error over time.
+ ax=0;gx=0;
+ for(int i=0;i<250;i++){ticks+=20;fused.update(&tilt,&crash);}
+ assert(std::fabs(fused.rollDegrees())<0.01F);
+ // Failed reads and long gaps reseed rather than integrating stale gyro data.
+ imuError=true;ticks+=20;assert(fused.update(&tilt,&crash)==ESP_FAIL);
+ imuError=false;ay=8192;ticks+=20;fused.update(&tilt,&crash);
+ assert(fused.rollDegrees()>26 && fused.rollDegrees()<27);
+ ay=0;gx=13100;ticks+=200;fused.update(&tilt,&crash);
+ assert(fused.rollDegrees()==0);
+ // Tick wrap keeps a real 20 ms gyro integration interval.
+ ticks=0xfffffff0U;fused.update(&tilt,&crash);
+ ticks+=20;fused.update(&tilt,&crash);
+ assert(fused.rollDegrees()>1.9F && fused.rollDegrees()<2.0F);
  puts("PASS: servo pulse/timer isolation, limits, smoothing, faults; signed MPU roll and crash threshold");
 }
 '''

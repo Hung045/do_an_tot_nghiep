@@ -22,7 +22,7 @@ software/
     ├── board_config/            Shared default GPIO and peripheral settings
     ├── crash_detector/          MPU6050 tilt measurement and crash threshold
     ├── motor_controller/        Throttle ADC, motor PWM, and relay
-    ├── headlight_controller/    Headlight brightness and adaptive SG90 steering
+    ├── headlight_controller/    Headlight brightness and adaptive MG90S steering
     ├── power_monitor/           INA219 register driver and configurable shunt calibration
     ├── gps_tracker/             NEO-6M UART/NMEA RMC+GGA reader
     ├── data_logger/             AT24C256 CRC-protected circular telemetry log
@@ -42,7 +42,7 @@ priorities; ESP-IDF also runs its own Wi-Fi/MQTT tasks):
 
 | Task | Work | Timing / priority |
 | --- | --- | --- |
-| `vehicle_control` | MPU6050, throttle, safety lock, motor PWM/relay and SG90 | target 20 ms / 5 |
+| `vehicle_control` | MPU6050, throttle, safety lock, motor PWM/relay and MG90S | target 20 ms / 5 |
 | `vehicle_light` | BH1750 and headlight, including fault blinking | 100 ms delay between updates / 4 |
 | `vehicle_telemetry` | GPS, INA219, EEPROM and Monitor logs | GPS polled between snapshots (normally 100 ms); snapshot every second / 3 |
 | `vehicle_network` | Wi-Fi startup and MQTT publishing | waits for queued snapshots / 2 |
@@ -180,19 +180,35 @@ Shared pin defaults and device settings are in
 
 ## Component hand-off
 
-Servo stabilization uses filtered roll with a fixed zero reference from
-`DEMO_SERVO_ROLL_ZERO_DEG` (no automatic startup calibration). It returns to
-the 90-degree command at absolute filtered roll <=3 degrees, and leaves center
-at >=4 degrees. Away from center, target changes smaller than 0.25 degrees are
-held to reduce jitter; gain is 0.5 after the 3-degree deadband. Center return
-bypasses this target hysteresis but still uses the movement rate limit.
+Lamp roll stabilization uses absolute compensation: `target = 90 - roll`,
+clamped to 50..130 degrees. This gives nominal 1:1 compensation up to +/-40
+ degrees with direct drive, not full stabilization beyond the travel limit.
+The fixed mounting reference is `DEMO_SERVO_ROLL_ZERO_DEG`; startup does not
+learn a new zero. Center entry is at absolute filtered roll <=0.5 degrees,
+exit at >=1 degree; target hysteresis remains 0.25 degrees. Servo smoothing
+is 40 ms with a maximum command rate of 50 degrees/second.
+
+MPU reads accel and gyro together (14-byte burst), explicitly configures +/-2g
+and +/-250 deg/s, and fuses accelerometer roll with gyro X (or -gyro Y for
+alternate mounting). Complementary correction has a 500 ms time constant;
+acceleration magnitude outside 0.8..1.2g disables accel correction for that
+sample. First read, failed-read recovery and gaps over 100 ms reseed from
+accelerometer roll. `DEMO_MPU_ROLL_GYRO_BIAS_DPS` is a manual signed bias
+(default zero); there is no automatic stationary calibration. Crash tilt and
+its 60-degree/200-ms threshold remain accelerometer-based.
+
+This is a single-axis prototype: gyro bias, sustained cornering acceleration,
+combined pitch/yaw motion, servo speed and shaft backlash limit accuracy.
+It does not guarantee a level beam during arbitrary vehicle motion. A servo
+that spins multiple turns under a fixed pulse must be diagnosed separately.
+
 Monitor prints servo status, roll and commanded angle (one decimal place).
 Invalid roll is shown as `nan`; validity, target and nominal pulse width use DEBUG.
 These are software values, not measured shaft angle or pin waveform.
 
 With motor load power disconnected, hold roll near zero for 3 seconds, then
-at +13 degrees for 3 seconds, then zero, -13 degrees, and zero again.
-Expected settled commands are approximately 90, 95, 90, 85, 90 degrees
+at +20 degrees for 3 seconds, then zero, -20 degrees, and zero again.
+Expected settled commands are approximately 90, 70, 90, 110, 90 degrees
 (off-center targets have up to 0.25-degree hysteresis). Mark the horn's starting
 position and check physical return. Multiple full shaft rotations are not an
 expected result; diagnose the servo, supply and PWM signal separately if seen.
@@ -234,7 +250,7 @@ actual board and modules before wiring.
 | Motor driver PWM input | GPIO25 |
 | Headlight MOSFET PWM input | GPIO26 |
 | Relay control input | GPIO27 |
-| SG90 positional servo signal | GPIO14 (LEDC timer 2/channel 2, 50 Hz) |
+| MG90S positional servo signal | GPIO14 (LEDC timer 2/channel 2, 50 Hz) |
 | MPU6050 SDA | GPIO21 |
 | MPU6050 SCL | GPIO22 |
 | BH1750 + AT24C256 + INA219 SDA (I2C1) | GPIO18 |
@@ -320,16 +336,15 @@ Use the 3S pack's BMS and a charger intended for 3S Li-ion packs (12.6 V
 termination). Fuse the battery output near the pack. The LM2596 is for the
 low-voltage electronics supply, not for powering the motor or headlight.
 
-## Adaptive headlight with SG90
+## Adaptive headlight with MG90S
 
-Use a positional SG90, not a continuous-rotation servo. The implementation lives
+Use a positional MG90S, not a continuous-rotation servo. The implementation lives
 in `components/headlight_controller/AdaptiveServo.cpp`; the control task updates
 it from the same MPU6050 sample used for crash detection. It uses independent
 LEDC timer 2/channel 2 at 50 Hz and 16-bit resolution, leaving motor and lamp
-PWM timers unchanged. See [Espressif LEDC documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32/api-reference/peripherals/ledc.html)
-and [TowerPro SG90 specifications](https://towerpro.com.tw/product/sg90-7/).
+PWM timers unchanged. The pulse mapping matches the successful `mg90s_bench` test; the expanded 50..130 command range requires checking mechanical clearance and calibrating actual shaft angles.
 
-| SG90 lead (verify markings on your servo) | Connection |
+| MG90S lead (verify markings on your servo) | Connection |
 | --- | --- |
 | Orange/yellow, signal | ESP32 GPIO14 |
 | Red, supply | Separate regulated servo supply around 5 V, suitable for its starting/stall current |
@@ -343,22 +358,23 @@ suspected damaged I2C modules disconnected during initial servo tests.
 
 Defaults in `BoardConfig.h`:
 
-- Center command 90 degrees; range 60..120 degrees. Mapping uses 1000..2000 us
+- Center command 90 degrees; range 50..130 degrees. Mapping uses 1000..2000 us
   for nominal 0..180 degrees, giving a restricted initial pulse range around
   1500 us. Actual angle depends on the servo; calibrate without forcing stops.
-- Gain 1, direction +1, zero offset 0 degrees; 3-degree continuous deadband,
-  150 ms roll filter, maximum command rate 60 degrees/second.
-- MPU mounted X forward, Y lateral, Z up: roll is `atan2(ay, az)` in degrees.
+- Gain 1, direction -1, zero offset 0 degrees; center entry at 0.5 degrees,
+  exit at 1 degree, 40 ms servo filter, maximum command rate 50 degrees/second.
+- MPU mounted X forward, Y lateral, Z up: accelerometer roll is `atan2(ay, az)` and gyro X supplies roll rate.
   `DEMO_MPU_ROLL_USE_Y=0` uses X as the lateral axis for a different mounting.
-  `DEMO_SERVO_DIRECTION=-1` reverses steering; `DEMO_SERVO_ROLL_ZERO_DEG` corrects
+  `DEMO_SERVO_DIRECTION` selects the physical compensation direction; `DEMO_SERVO_ROLL_ZERO_DEG` corrects
   the stationary mounting offset without changing the crash threshold.
 
 Start with motor power disconnected, servo horn/lamp detached and the MPU flat.
 After initialization, install the horn so the lamp faces forward at the center
-command. Orient the servo shaft vertically for horizontal left/right steering.
+command. Orient the servo shaft along the vehicle longitudinal axis for lamp
+roll compensation, not vertically for yaw steering.
 Mount only a lightweight lamp supported without forcing the servo shaft.
 Tilt the MPU slowly in both directions below 60 degrees and check the Monitor's
-`SERVO TRACKING | roll=... | command=... | target=...` line once per second.
+`SERVO TRACKING | roll=... | cmd=...` line once per second.
 Reverse the direction setting if the lamp turns the wrong way. Return flat and
 verify centering. A missing/failed MPU sample, non-finite roll, roll magnitude
 at least 60 degrees, or latched safety fault commands a smooth return to center.
@@ -494,3 +510,7 @@ Before sharing, run `git diff --check`, build using ESP-IDF, and review
 `git status --short` and `git diff`. Configure each developer's Wi-Fi and
 broker settings locally through menuconfig. Hardware test results apply to
 the current motor bench setup; the other modules still need integration tests.
+
+Confirm compensation direction on the actual mounting: a left lean must tilt the
+lamp right. The numerical negative sign alone does not establish physical left/right.
+The servo shaft must be aligned to allow lamp roll compensation, rather than yaw steering.
