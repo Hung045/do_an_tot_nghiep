@@ -18,4 +18,6 @@ private:
     bool available_ = false;
     TickType_t tiltDetectedAt_ = 0;
     float rollDegrees_ = 0.0F;
+    bool rollInitialized_ = false;
+    TickType_t lastRollTick_ = 0;
 };

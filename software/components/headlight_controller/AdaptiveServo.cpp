@@ -18,6 +18,8 @@ static_assert(DEMO_SERVO_MIN_DEG >= 0 && DEMO_SERVO_MIN_DEG < DEMO_SERVO_CENTER_
 static_assert(DEMO_SERVO_MIN_PULSE_US >= 500 && DEMO_SERVO_MAX_PULSE_US <= 2500 &&
               DEMO_SERVO_MIN_PULSE_US < DEMO_SERVO_MAX_PULSE_US);
 static_assert(DEMO_SERVO_DIRECTION == 1 || DEMO_SERVO_DIRECTION == -1);
+static_assert(DEMO_SERVO_CENTER_EXIT_DEG > DEMO_SERVO_DEADBAND_DEG &&
+              DEMO_SERVO_TARGET_HYST_DEG > 0);
 static_assert(DEMO_SERVO_RATE_DEG_PER_SEC > 0 && DEMO_SERVO_FILTER_MS > 0 &&
               DEMO_SERVO_GAIN >= 0 && DEMO_SERVO_DEADBAND_DEG >= 0);
 
@@ -34,6 +36,7 @@ esp_err_t AdaptiveServo::initialize()
     ready_ = tracking_ = false;
     angle_ = target_ = DEMO_SERVO_CENTER_DEG;
     filteredRoll_ = 0;
+    centered_ = true;
     ledc_timer_config_t timer = {};
     timer.speed_mode = kMode;
     timer.duty_resolution = LEDC_TIMER_16_BIT;
@@ -52,7 +55,7 @@ esp_err_t AdaptiveServo::initialize()
     err = ledc_channel_config(&channel);
     if (err != ESP_OK) return err;
     ready_ = true;
-    ESP_LOGI("AdaptiveServo", "SG90 GPIO%d, 50 Hz, center=%.1f deg, limits=%.1f..%.1f deg (command only)",
+    ESP_LOGI("AdaptiveServo", "MG90S GPIO%d, 50 Hz, center=%.1f deg, limits=%.1f..%.1f deg (command only)",
              DEMO_HEADLIGHT_SERVO_GPIO, static_cast<double>(angle_),
              static_cast<double>(DEMO_SERVO_MIN_DEG), static_cast<double>(DEMO_SERVO_MAX_DEG));
     return ESP_OK;
@@ -78,11 +81,25 @@ esp_err_t AdaptiveServo::update(float rollDegrees, bool imuValid, bool fault, ui
     if (tracking_) {
         const float roll = rollDegrees - DEMO_SERVO_ROLL_ZERO_DEG;
         filteredRoll_ += dtMs / (DEMO_SERVO_FILTER_MS + dtMs) * (roll - filteredRoll_);
-        const float offset = std::copysign(std::max(0.0F, std::fabs(filteredRoll_) - DEMO_SERVO_DEADBAND_DEG), filteredRoll_);
-        target_ = std::clamp(DEMO_SERVO_CENTER_DEG + DEMO_SERVO_DIRECTION * DEMO_SERVO_GAIN * offset,
-                             DEMO_SERVO_MIN_DEG, DEMO_SERVO_MAX_DEG);
+        // Separate enter/exit thresholds prevent repeated movements near upright.
+        const float magnitude = std::fabs(filteredRoll_);
+        if (magnitude <= DEMO_SERVO_DEADBAND_DEG) centered_ = true;
+        else if (magnitude >= DEMO_SERVO_CENTER_EXIT_DEG) centered_ = false;
+        if (centered_) {
+            // Always return exactly to center, even for a sub-hysteresis remainder.
+            target_ = DEMO_SERVO_CENTER_DEG;
+        } else {
+            // Absolute roll compensation avoids history-dependent offsets after
+            // reaching a mechanical command limit and then leaning back.
+            const float candidate = std::clamp(
+                DEMO_SERVO_CENTER_DEG + DEMO_SERVO_DIRECTION * DEMO_SERVO_GAIN * filteredRoll_,
+                DEMO_SERVO_MIN_DEG, DEMO_SERVO_MAX_DEG);
+            if (std::fabs(candidate - target_) >= DEMO_SERVO_TARGET_HYST_DEG)
+                target_ = candidate;
+        }
     } else {
         filteredRoll_ = 0;
+        centered_ = true;
         target_ = DEMO_SERVO_CENTER_DEG;
     }
     const float step = DEMO_SERVO_RATE_DEG_PER_SEC * dtMs / 1000.0F;

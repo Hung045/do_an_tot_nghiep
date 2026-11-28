@@ -329,9 +329,16 @@ void telemetryTask(void *)
             ESP_LOGI(TAG, "INA219  MISSING");
         }
 
-        ESP_LOGI(TAG, "SERVO   %s | command=%.1f deg",
+        ESP_LOGI(TAG, "SERVO %s | roll=%.1f | cmd=%.1f deg",
                  !snapshot.servoReady ? "UNAVAILABLE" : snapshot.servoTracking ? "TRACKING" : "CENTERING",
+                 static_cast<double>(snapshot.rollValid ? snapshot.rollDegrees :
+                     std::numeric_limits<float>::quiet_NaN()),
                  static_cast<double>(snapshot.servoDegrees));
+        ESP_LOGD(TAG, "SERVO roll_valid=%s | target=%.2f deg | pulse_cmd=%.1f us",
+                 snapshot.rollValid ? "YES" : "NO",
+                 static_cast<double>(snapshot.servoTargetDegrees),
+                 static_cast<double>(DEMO_SERVO_MIN_PULSE_US + snapshot.servoDegrees / 180.0F *
+                     (DEMO_SERVO_MAX_PULSE_US - DEMO_SERVO_MIN_PULSE_US)));
 
         ESP_LOGD(TAG, "GPS UART status=%s | RX=%lu B | NMEA_OK=%lu | rejected=%lu | rx_age=%ld ms | nmea_age=%ld ms",
                  gpsStatusName(gpsDiagnostics.status),
